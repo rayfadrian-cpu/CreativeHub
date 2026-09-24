@@ -5,7 +5,7 @@ import { CalendarDays, GripVertical, Search, X, ChevronLeft, ChevronRight } from
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { statuses, priorities, canMove, type ContentItem, type WorkspaceData } from "@/lib/hub-types";
-import { Choice, EmptyState, PriorityBadge, StatusBadge } from "./hub-views";
+import { Choice, PriorityBadge, StatusBadge } from "./hub-views";
 import { dateLabel, initials } from "./creative-hub";
 
 type Filters = { brand: string; campaign: string; pillar: string; platform: string; pic: string; priority: string };
@@ -71,6 +71,8 @@ export function Kanban({ data, open, move, busyIds }: { data: WorkspaceData; ope
       void move(g.item, g.over as ContentItem["status"]);
     } else setAnnouncement("Move cancelled.");
   }
+  // The handler intentionally reads the latest mutable drag gesture.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const escape = (e: KeyboardEvent) => { if (e.key === "Escape") finish(true); }; window.addEventListener("keydown", escape); return () => { window.removeEventListener("keydown", escape); if (gesture.current) cancelAnimationFrame(gesture.current.frame); }; }, []);
   return <>
     <div className="kanban-controls"><div className="board-search"><Search size={16}/><Input aria-label="Search Kanban cards" placeholder="Find a content card…" value={query} onChange={e => setQuery(e.target.value)}/></div><span className="board-count">{filtered.length} of {data.items.length} items</span><div className="table-actions"><Button variant="outline" size="icon" aria-label="Scroll board left" onClick={() => scroller.current?.scrollBy({ left: -580, behavior: "smooth" })}><ChevronLeft size={16}/></Button><Button variant="outline" size="icon" aria-label="Scroll board right" onClick={() => scroller.current?.scrollBy({ left: 580, behavior: "smooth" })}><ChevronRight size={16}/></Button></div></div>

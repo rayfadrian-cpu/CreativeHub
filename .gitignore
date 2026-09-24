@@ -38,6 +38,7 @@ yarn-error.log*
 
 # typescript
 next-env.d.ts
+*.tsbuildinfo
 /dist/
 /.wrangler/
 # Checkout-local execution profile and tool state; never publish them.
@@ -46,3 +47,18 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+
+# local databases, exports, and test artifacts
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.backup
+*.bak
+/test-output/
+/playwright-report/
+/auth-cookie.txt
+
+# local tool caches
+/.cache/
+/.turbo/

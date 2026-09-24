@@ -15,6 +15,13 @@
       "when": 1789871914207,
       "tag": "0001_dear_leo",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790170746411,
+      "tag": "0002_mean_klaw",
+      "breakpoints": true
     }
   ]
 }
