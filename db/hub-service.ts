@@ -18,18 +18,17 @@ import {
   type Member,
   type Pillar,
 } from "../lib/hub-types.ts";
+import { HubError } from "./hub-error.ts";
+import { handleMilestoneTwo } from "./milestone-two.ts";
 
 type Identity = { userId: string; email: string; displayName: string };
-type Context = { db: D1Database; identity: Identity | null; ownerEmail: string };
+type Context = { db: D1Database; bucket?: R2Bucket; identity: Identity | null; ownerEmail: string };
 type WorkspaceRow = { id: string; name: string; slug: string; timezone: string; modelVersion: number; ownerUserId: string; ownerEmail: string };
 type BrandRow = { id: number; name: string; description: string; slug: string; logo: string; timezone: string; archived: number };
 type CampaignRow = { id: number; brand_id: number; name: string; status: string; archived: number };
 type PillarRow = { id: number; brand_id: number | null; name: string };
 
-export class HubError extends Error {
-  status: number;
-  constructor(message: string, status = 400) { super(message); this.status = status; }
-}
+export { HubError } from "./hub-error.ts";
 
 const deny = (): never => { throw new HubError(permissionMessage, 403); };
 const memberCols = "id, user_id AS userId, workspace_id AS workspaceId, name, email, role, status";
@@ -37,10 +36,12 @@ const itemCols = `c.id, c.workspace_id AS workspaceId, c.title,
   c.brand_id AS brandId, COALESCE(b.name, c.brand) AS brand,
   c.campaign_id AS campaignId, COALESCE(cp.name, c.campaign) AS campaign,
   c.pillar_id AS pillarId, COALESCE(p.name, c.pillar) AS pillar,
-  c.objective, c.brief, c.target_audience AS targetAudience, c.format,
+  c.objective, c.brief, c.target_audience AS targetAudience, c.key_message AS keyMessage,
+  c.content_direction AS contentDirection, c."references" AS "references", c.format,
   c.pic, c.assignee_id AS assigneeId, c.creator_member_id AS creatorMemberId,
   COALESCE(creator.name, '') AS creatorName, c.deadline, c.publish_date AS publishDate,
-  c.platform, c.priority, c.status, c.caption, c.notes, c.version,
+  c.platform, c.priority, c.status, c.caption, c.copy_hook AS copyHook, c.copy_cta AS copyCta,
+  c.copy_notes AS copyNotes, c.notes, c.version,
   c.review_decision AS reviewDecision, c.created_at AS createdAt, c.updated_at AS updatedAt`;
 const itemFrom = `content_items c
   LEFT JOIN brands b ON b.id = c.brand_id AND b.workspace_id = c.workspace_id
@@ -171,7 +172,9 @@ async function ensureWorkspaceModel(db: D1Database, actor: Actor) {
   const workspace = await db.prepare(`SELECT id, name, slug, timezone, model_version AS modelVersion,
     owner_user_id AS ownerUserId, owner_email AS ownerEmail FROM workspaces WHERE id = ?`)
     .bind(actor.workspaceId).first<WorkspaceRow>();
-  if (!workspace || workspace.modelVersion >= 2) return;
+  if (!workspace) return;
+
+  if (workspace.modelVersion < 2) {
 
   const workspaceSlug = workspace.slug || await uniqueSlug(db, workspace.id, "workspaces", workspace.name, workspace.id);
   await db.prepare(`UPDATE workspaces SET slug = ?, timezone = CASE WHEN timezone = '' THEN 'Asia/Jakarta' ELSE timezone END,
@@ -242,6 +245,27 @@ async function ensureWorkspaceModel(db: D1Database, actor: Actor) {
   await db.prepare("UPDATE workspaces SET initialized = 1, model_version = 2, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(workspace.id).run();
   await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name, "Core records were linked to stable Brand, Campaign, and Pillar IDs.");
+  }
+
+  const currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
+    .bind(actor.workspaceId).first<{ modelVersion: number }>();
+  if ((currentVersion?.modelVersion ?? workspace.modelVersion) >= 3) return;
+
+  await db.prepare(`INSERT OR IGNORE INTO content_platform_variants
+    (workspace_id, content_id, platform, title, caption, description, hashtags, cta, notes, planned_publish_at, status)
+    SELECT workspace_id, id, platform, title, caption, '', '', '', '',
+      CASE WHEN publish_date = '' THEN '' ELSE publish_date || 'T09:00' END, status
+    FROM content_items
+    WHERE workspace_id = ? AND platform IN ('Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'YouTube')`)
+    .bind(actor.workspaceId).run();
+  const fallback = await db.prepare(`SELECT COUNT(*) AS count FROM content_items
+    WHERE workspace_id = ? AND platform != '' AND platform NOT IN ('Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'YouTube')`)
+    .bind(actor.workspaceId).first<{ count: number }>();
+  await db.prepare("UPDATE workspaces SET model_version = 3, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(actor.workspaceId).run();
+  await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
+    "Milestone 2 records were prepared and existing Platform values were migrated to platform versions.",
+    { modelVersion: 3, unsupportedLegacyPlatforms: Number(fallback?.count ?? 0) });
 }
 
 async function authenticate(ctx: Context): Promise<Actor> {
@@ -275,13 +299,13 @@ async function getItem(db: D1Database, actor: Actor, id: number) {
 }
 
 async function contentInput(db: D1Database, actor: Actor, payload: Record<string, unknown>, previous?: ContentItem) {
-  const allowed = ["title", "brandId", "campaignId", "pillarId", "objective", "brief", "targetAudience", "format", "priority", "assigneeId", "pic", "deadline", "publishDate", "platform", "status", "caption", "notes", "version"];
+  const allowed = ["title", "brandId", "campaignId", "pillarId", "objective", "brief", "targetAudience", "keyMessage", "contentDirection", "references", "format", "priority", "assigneeId", "pic", "deadline", "publishDate", "platform", "status", "caption", "copyHook", "copyCta", "copyNotes", "notes", "version"];
   if (Object.keys(payload).some(x => !allowed.includes(x))) throw new HubError("This form contains an unsupported field.");
   const input = {
     title: "", brandId: null, brand: "", campaignId: null, campaign: "", pillarId: null, pillar: "",
-    objective: "", brief: "", targetAudience: "", format: "Post", priority: "Normal", assigneeId: null,
+    objective: "", brief: "", targetAudience: "", keyMessage: "", contentDirection: "", references: "", format: "Post", priority: "Normal", assigneeId: null,
     pic: "", creatorMemberId: actor.id, creatorName: actor.name, deadline: "", publishDate: "", platform: "Instagram",
-    status: "Idea", caption: "", notes: "", version: 1, reviewDecision: "", createdAt: "", updatedAt: "",
+    status: "Idea", caption: "", copyHook: "", copyCta: "", copyNotes: "", notes: "", version: 1, reviewDecision: "", createdAt: "", updatedAt: "",
     ...previous, ...payload,
   } as ContentItem;
 
@@ -292,12 +316,18 @@ async function contentInput(db: D1Database, actor: Actor, payload: Record<string
   input.objective = text(input.objective ?? "", 2000);
   input.brief = text(input.brief ?? "", 10000);
   input.targetAudience = text(input.targetAudience ?? "", 2000);
+  input.keyMessage = text(input.keyMessage ?? "", 4000);
+  input.contentDirection = text(input.contentDirection ?? "", 10000);
+  input.references = text(input.references ?? "", 10000);
   input.format = text(input.format, 80) as ContentItem["format"];
   input.pic = text(input.pic ?? "", 120);
   input.deadline = validDate(input.deadline ?? "", "deadline", true);
   input.publishDate = validDate(input.publishDate, "publish date");
   input.platform = required(input.platform, "Platform", 80);
   input.caption = text(input.caption ?? "", 15000);
+  input.copyHook = text(input.copyHook ?? "", 4000);
+  input.copyCta = text(input.copyCta ?? "", 2000);
+  input.copyNotes = text(input.copyNotes ?? "", 10000);
   input.notes = text(input.notes ?? "", 15000);
   input.assigneeId = nullableId(input.assigneeId);
   if (!statuses.includes(input.status)) throw new HubError("Choose a valid workflow status.");
@@ -402,6 +432,9 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
     const [resource, key, action] = path;
     const method = request.method;
 
+    const milestoneTwo = await handleMilestoneTwo(request, path, { db, bucket: ctx.bucket, actor });
+    if (milestoneTwo) return milestoneTwo;
+
     if (resource === "workspace" && method === "GET") {
       const [workspace, content, pillars, members, brands, campaigns] = await Promise.all([
         db.prepare(`SELECT id, name, slug, timezone, created_at AS createdAt, updated_at AS updatedAt FROM workspaces WHERE id = ?`).bind(scope).first(),
@@ -451,12 +484,13 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
         const input = await contentInput(db, actor, await body(request));
         const result = await db.prepare(`INSERT INTO content_items
           (owner_id, workspace_id, brand_id, brand, campaign_id, campaign, pillar_id, pillar, title, objective, brief,
-           target_audience, format, priority, assignee_id, pic, creator_member_id, deadline, publish_date, platform,
-           status, caption, notes)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+           target_audience, key_message, content_direction, "references", format, priority, assignee_id, pic, creator_member_id,
+           deadline, publish_date, platform, status, caption, copy_hook, copy_cta, copy_notes, notes)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
           .bind(actor.userId, scope, input.brandId, input.brand, input.campaignId, input.campaign, input.pillarId, input.pillar,
-            input.title, input.objective, input.brief, input.targetAudience, input.format, input.priority, input.assigneeId,
-            input.pic, actor.id, input.deadline, input.publishDate, input.platform, input.status, input.caption, input.notes).run();
+            input.title, input.objective, input.brief, input.targetAudience, input.keyMessage, input.contentDirection, input.references,
+            input.format, input.priority, input.assigneeId, input.pic, actor.id, input.deadline, input.publishDate, input.platform,
+            input.status, input.caption, input.copyHook, input.copyCta, input.copyNotes, input.notes).run();
         const id = Number(result.meta.last_row_id);
         await activity(db, actor, "content_created", "content", id, input.title, `Created in ${input.status}.`, { status: input.status });
         return json({ item: await getItem(db, actor, id) }, 201);
@@ -495,25 +529,31 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
           const payload = await body(request);
           ensureVersion(payload, item);
           const next = await contentInput(db, actor, payload, item);
-          const fields = ["title", "brandId", "campaignId", "pillarId", "objective", "brief", "targetAudience", "format", "priority", "assigneeId", "pic", "deadline", "publishDate", "platform", "status", "caption", "notes"] as const;
+          const fields = ["title", "brandId", "campaignId", "pillarId", "objective", "brief", "targetAudience", "keyMessage", "contentDirection", "references", "format", "priority", "assigneeId", "pic", "deadline", "publishDate", "platform", "status", "caption", "copyHook", "copyCta", "copyNotes", "notes"] as const;
           const modified = fields.filter(field => next[field] !== item[field]);
           const reviewDecision = next.status !== item.status ? (next.status === "Approved" ? "approved" : next.status === "Revision" ? "revision" : "") : item.reviewDecision;
           const result = await db.prepare(`UPDATE content_items SET brand_id = ?, brand = ?, campaign_id = ?, campaign = ?,
-            pillar_id = ?, pillar = ?, title = ?, objective = ?, brief = ?, target_audience = ?, format = ?, priority = ?,
-            assignee_id = ?, pic = ?, deadline = ?, publish_date = ?, platform = ?, status = ?, caption = ?, notes = ?,
+            pillar_id = ?, pillar = ?, title = ?, objective = ?, brief = ?, target_audience = ?, key_message = ?, content_direction = ?, "references" = ?, format = ?, priority = ?,
+            assignee_id = ?, pic = ?, deadline = ?, publish_date = ?, platform = ?, status = ?, caption = ?, copy_hook = ?, copy_cta = ?, copy_notes = ?, notes = ?,
             review_decision = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
             WHERE workspace_id = ? AND id = ? AND version = ?`)
             .bind(next.brandId, next.brand, next.campaignId, next.campaign, next.pillarId, next.pillar, next.title, next.objective,
-              next.brief, next.targetAudience, next.format, next.priority, next.assigneeId, next.pic, next.deadline, next.publishDate,
-              next.platform, next.status, next.caption, next.notes, reviewDecision, scope, item.id, item.version).run();
+            next.brief, next.targetAudience, next.keyMessage, next.contentDirection, next.references, next.format, next.priority,
+              next.assigneeId, next.pic, next.deadline, next.publishDate, next.platform, next.status, next.caption, next.copyHook,
+              next.copyCta, next.copyNotes, next.notes, reviewDecision, scope, item.id, item.version).run();
           changed(result);
           if (next.status !== item.status) {
             await activity(db, actor, next.status === "Approved" || next.status === "Revision" ? "approval_action" : "status_changed",
               "content", item.id, next.title, `Moved from ${item.status} to ${next.status}.`, { from: item.status, to: next.status });
           }
           const detailFields = modified.filter(x => x !== "status");
-          if (detailFields.length) await activity(db, actor, "content_updated", "content", item.id, next.title,
-            `Updated ${detailFields.map(x => x === "publishDate" ? "publish date" : x === "assigneeId" ? "PIC" : x).join(", ")}.`, { fields: detailFields });
+          const briefFields = detailFields.filter(x => ["objective", "targetAudience", "keyMessage", "contentDirection", "brief", "references", "notes"].includes(x));
+          const copyFields = detailFields.filter(x => ["caption", "copyHook", "copyCta", "copyNotes"].includes(x));
+          const overviewFields = detailFields.filter(x => !briefFields.includes(x) && !copyFields.includes(x));
+          if (briefFields.length) await activity(db, actor, "brief_updated", "content", item.id, next.title, "Creative brief updated.", { fields: briefFields });
+          if (copyFields.length) await activity(db, actor, "copy_updated", "content", item.id, next.title, "Master Copy updated.", { fields: copyFields });
+          if (overviewFields.length) await activity(db, actor, "content_updated", "content", item.id, next.title,
+            `Updated ${overviewFields.map(x => x === "publishDate" ? "publish date" : x === "assigneeId" ? "PIC" : x).join(", ")}.`, { fields: overviewFields });
           return json({ item: await getItem(db, actor, item.id) });
         }
       }

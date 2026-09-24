@@ -1,6 +1,6 @@
 # Creative Hub
 
-Creative Hub is a private content-management workspace for planning social media content. Milestone 1 includes login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, and Activity History.
+Creative Hub is a private content-management workspace for planning social media content. Milestones 1 and 2 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, and Activity History.
 
 Creative Hub does **not** publish to social media yet. The Scheduled status records the team's plan only.
 
@@ -44,6 +44,8 @@ Use `.env.local` for local development. Production values are managed in Sites s
 
 Creative Hub uses Cloudflare D1. Database definitions live in `db/schema.ts`, while generated migrations live in `drizzle/`.
 
+Uploaded file bytes are stored privately in Cloudflare R2. D1 stores only file metadata and the links between a file, a Content item, and an optional platform version. The application streams private files to signed-in workspace members; it does not expose public R2 URLs.
+
 After changing the schema:
 
 1. Back up production data.
@@ -65,6 +67,18 @@ After changing the schema:
 Never edit a migration that has already been applied in production. Add a new migration instead.
 
 Migration `0002_mean_klaw.sql` is intentionally additive. It creates the improved Brand, Campaign, and Activity tables, then adds nullable relationships and new Content fields. Existing rows are linked safely by the idempotent backfill in `db/hub-service.ts` when an authorized member first loads the upgraded workspace.
+
+Migration `0003_milestone_two.sql` is also additive. It adds Media Library metadata, platform versions, attachment tables, and structured Brief and Master Copy fields. The version-3 backfill creates one platform version from each supported legacy Platform value without deleting or overwriting the original Content data. See `docs/milestone-2-migration.md` for deployment and recovery details.
+
+## Media Library limits
+
+- Images and documents: up to 25 MB each.
+- Videos: up to 75 MB each.
+- Images: JPEG, PNG, WebP, and GIF.
+- Videos: MP4, WebM, and QuickTime/MOV.
+- Documents: PDF, plain text, CSV, Word, PowerPoint, and Excel formats.
+
+A file cannot be deleted while it is attached to Content or a platform version. Detaching a file never deletes the Media Library copy.
 
 ## Quality checks
 
@@ -88,6 +102,11 @@ The test suite covers:
 - Content Pillar retention behavior;
 - server search, filters, and pagination;
 - approval actions, concurrency protection, and Activity History.
+- safe Milestone 2 migration and legacy platform backfill;
+- Content workspace visibility and permissions;
+- platform-version creation, editing, and concurrency protection;
+- Media Library upload, private preview, search, rename, and deletion permissions;
+- Content and platform-version attachment safety.
 
 ## Production deployment
 
@@ -118,10 +137,10 @@ If a deployment fails after a migration is applied, do not edit or replay the ap
 
 ## Current scope
 
-Milestone 1 ends at content planning and team workflow. The following are intentionally not included yet:
+Milestone 2 ends at the creative workspace, Media Library, and platform-specific preparation. The following are intentionally not included yet:
 
-- Media Library and file uploads
-- Platform-specific content versions
+- Working comments, mentions, or discussions
+- Expanded multi-step collaboration and approval tools beyond the existing workflow
 - Social media account connections
 - Publishing queue and automatic publishing
 - Publishing logs

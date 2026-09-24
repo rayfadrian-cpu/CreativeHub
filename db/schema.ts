@@ -91,6 +91,9 @@ export const contentItems = sqliteTable("content_items", {
   objective: text("objective").notNull().default(""),
   brief: text("brief").notNull().default(""),
   targetAudience: text("target_audience").notNull().default(""),
+  keyMessage: text("key_message").notNull().default(""),
+  contentDirection: text("content_direction").notNull().default(""),
+  references: text("references").notNull().default(""),
   format: text("format").notNull().default("Post"),
   priority: text("priority").notNull().default("Normal"),
   assigneeId: integer("assignee_id"),
@@ -101,6 +104,9 @@ export const contentItems = sqliteTable("content_items", {
   platform: text("platform").notNull(),
   status: text("status").notNull().default("Idea"),
   caption: text("caption").notNull().default(""),
+  copyHook: text("copy_hook").notNull().default(""),
+  copyCta: text("copy_cta").notNull().default(""),
+  copyNotes: text("copy_notes").notNull().default(""),
   notes: text("notes").notNull().default(""),
   version: integer("version").notNull().default(1),
   reviewDecision: text("review_decision").notNull().default(""),
@@ -127,6 +133,74 @@ export const activityHistory = sqliteTable("activity_history", {
   context: text("context").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_activity_workspace_created").on(table.workspaceId, table.createdAt)]);
+
+export const mediaAssets = sqliteTable("media_assets", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  fileName: text("file_name").notNull(),
+  originalName: text("original_name").notNull(),
+  kind: text("kind").notNull(),
+  mimeType: text("mime_type").notNull(),
+  fileSize: integer("file_size").notNull(),
+  storageKey: text("storage_key").notNull(),
+  width: integer("width"),
+  height: integer("height"),
+  durationSeconds: integer("duration_seconds"),
+  uploaderMemberId: integer("uploader_member_id").references(() => members.id, { onDelete: "set null" }),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("media_assets_storage_key_unique").on(table.storageKey),
+  index("idx_media_assets_workspace_created").on(table.workspaceId, table.createdAt),
+  index("idx_media_assets_workspace_kind").on(table.workspaceId, table.kind),
+]);
+
+export const contentPlatformVariants = sqliteTable("content_platform_variants", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "cascade" }),
+  platform: text("platform").notNull(),
+  title: text("title").notNull().default(""),
+  caption: text("caption").notNull().default(""),
+  description: text("description").notNull().default(""),
+  hashtags: text("hashtags").notNull().default(""),
+  cta: text("cta").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  plannedPublishAt: text("planned_publish_at").notNull().default(""),
+  status: text("status").notNull().default("Idea"),
+  version: integer("version").notNull().default(1),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("platform_variants_content_platform_unique").on(table.contentId, table.platform),
+  index("idx_platform_variants_workspace_content").on(table.workspaceId, table.contentId),
+]);
+
+export const contentMediaAssets = sqliteTable("content_media_assets", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "cascade" }),
+  mediaAssetId: integer("media_asset_id").notNull().references(() => mediaAssets.id, { onDelete: "restrict" }),
+  usage: text("usage").notNull().default("Supporting Asset"),
+  position: integer("position").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("content_media_assets_unique").on(table.contentId, table.mediaAssetId),
+  index("idx_content_media_assets_content_position").on(table.contentId, table.position),
+]);
+
+export const platformVariantMediaAssets = sqliteTable("platform_variant_media_assets", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  variantId: integer("variant_id").notNull().references(() => contentPlatformVariants.id, { onDelete: "cascade" }),
+  mediaAssetId: integer("media_asset_id").notNull().references(() => mediaAssets.id, { onDelete: "restrict" }),
+  usage: text("usage").notNull().default("Supporting Asset"),
+  position: integer("position").notNull().default(0),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("platform_variant_media_assets_unique").on(table.variantId, table.mediaAssetId),
+  index("idx_variant_media_assets_variant_position").on(table.variantId, table.position),
+]);
 
 // Retained for one-way migration compatibility. New code uses brands and campaigns.
 export const collections = sqliteTable("collections", {

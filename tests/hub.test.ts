@@ -6,8 +6,25 @@ import { readFileSync, readdirSync } from "node:fs";
 import { handleHub } from "../db/hub-service.ts";
 import { roles, statuses, type Role } from "../lib/hub-types.ts";
 
+let fixtureSequence = 0;
+
 function fixture() {
+  const fixtureId = ++fixtureSequence;
   const sqlite = new DatabaseSync(":memory:");
+  const objects = new Map<string, { bytes: Uint8Array; httpEtag: string }>();
+  const bucket = {
+    async put(key: string, value: BodyInit) {
+      const bytes = new Uint8Array(await new Response(value).arrayBuffer());
+      const httpEtag = `\"${bytes.length}-${key.length}\"`;
+      objects.set(key, { bytes, httpEtag });
+      return { key, size: bytes.length, httpEtag };
+    },
+    async get(key: string) {
+      const object = objects.get(key);
+      return object ? { body: object.bytes, httpEtag: object.httpEtag } : null;
+    },
+    async delete(key: string) { objects.delete(key); },
+  } as unknown as R2Bucket;
   const files = readdirSync("drizzle").filter(x => x.endsWith(".sql")).sort();
   sqlite.exec(readFileSync("drizzle/" + files[0], "utf8"));
   sqlite.exec(`INSERT INTO content_items
@@ -34,15 +51,32 @@ function fixture() {
       catch (error) { sqlite.exec("ROLLBACK"); throw error; }
     },
   } as unknown as D1Database;
-  const identity = (role: string) => ({ userId: role + "-user", email: role.replaceAll(" ", "").toLowerCase() + "@example.com", displayName: role + " Person" });
+  const identity = (role: string) => ({ userId: `${fixtureId}-${role}-user`, email: role.replaceAll(" ", "").toLowerCase() + "@example.com", displayName: role + " Person" });
   async function call(role: string | null, method: string, path: string, payload?: any, headers: Record<string, string> = {}) {
     const request = new Request("https://creative.test/api/hub/" + path, {
       method,
       headers: { origin: "https://creative.test", ...headers },
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     });
-    const response = await handleHub(request, path.split("?")[0].split("/"), { db, identity: role ? identity(role) : null, ownerEmail: "owner@example.com" });
+    const response = await handleHub(request, path.split("?")[0].split("/"), { db, bucket, identity: role ? identity(role) : null, ownerEmail: "owner@example.com" });
     return { status: response.status, data: await response.json() as any };
+  }
+  async function upload(role: string, fileName: string, mimeType: string, bytes: Uint8Array) {
+    const request = new Request(`https://creative.test/api/hub/media/upload?fileName=${encodeURIComponent(fileName)}`, {
+      method: "POST",
+      headers: {
+        origin: "https://creative.test", "content-type": mimeType, "content-length": String(bytes.byteLength),
+      },
+      body: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
+    });
+    const response = await handleHub(request, ["media", "upload"], { db, bucket, identity: identity(role), ownerEmail: "owner@example.com" });
+    return { status: response.status, data: await response.json() as any };
+  }
+  async function file(role: string, assetId: number) {
+    const request = new Request(`https://creative.test/api/hub/media/${assetId}/file`, {
+      headers: { origin: "https://creative.test" },
+    });
+    return handleHub(request, ["media", String(assetId), "file"], { db, bucket, identity: identity(role), ownerEmail: "owner@example.com" });
   }
   async function start() {
     assert.equal((await call("Owner", "GET", "workspace")).status, 200);
@@ -63,7 +97,7 @@ function fixture() {
       .run(brand, assignee + " Person", memberId(assignee), status);
     return Number(result.lastInsertRowid);
   }
-  return { sqlite, call, start, memberId, brandId, pillarId, item };
+  return { sqlite, objects, call, upload, file, start, memberId, brandId, pillarId, item };
 }
 
 test("safe migration preserves every legacy content value and links stable IDs", async () => {
@@ -81,7 +115,9 @@ test("safe migration preserves every legacy content value and links stable IDs",
   assert.ok(data.items[0].brandId);
   assert.ok(data.items[0].pillarId);
   assert.ok(data.items[0].campaignId);
-  assert.equal((f.sqlite.prepare("SELECT model_version FROM workspaces WHERE id = 'main'").get() as any).model_version, 2);
+  assert.equal((f.sqlite.prepare("SELECT model_version FROM workspaces WHERE id = 'main'").get() as any).model_version, 3);
+  const variant = f.sqlite.prepare("SELECT platform, title, caption, notes FROM content_platform_variants WHERE content_id = 42").get() as any;
+  assert.deepEqual([variant.platform, variant.title, variant.caption, variant.notes], ["Instagram", "Preserve me", "Original caption", ""]);
   assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM collections").get() as any).n, 0);
   assert.equal((await f.call("Owner", "PUT", "content/42", { version: 1, title: "Bad origin" }, { origin: "https://evil.test" })).status, 403);
   assert.equal((await f.call("Viewer", "GET", "workspace")).data.members[0].email, "");
@@ -229,5 +265,120 @@ test("owner protection, role changes, disabling members, review actions, and con
   assert.equal(rejected.status, 200);
   assert.equal(rejected.data.item.reviewDecision, "rejected");
   assert.ok((f.sqlite.prepare("SELECT COUNT(*) n FROM activity_history WHERE action IN ('member_disabled','member_role_changed','approval_action')").get() as any).n >= 3);
+  f.sqlite.close();
+});
+
+test("content workspace returns every Milestone 2 section and keeps record visibility rules", async () => {
+  const f = fixture(); await f.start();
+  const creativeItem = f.item("Writing", "Creative");
+  const owner = await f.call("Owner", "GET", `content/${creativeItem}/workspace`);
+  assert.equal(owner.status, 200);
+  assert.equal(owner.data.item.id, creativeItem);
+  assert.deepEqual(owner.data.variants, []);
+  assert.deepEqual(owner.data.assets, []);
+  assert.equal(owner.data.permissions.manageAssets, true);
+  const viewer = await f.call("Viewer", "GET", `content/${creativeItem}/workspace`);
+  assert.equal(viewer.status, 200);
+  assert.equal(viewer.data.permissions.manageAssets, false);
+  assert.equal(viewer.data.permissions.manageVariants, false);
+  assert.equal((await f.call("Designer", "GET", `content/${creativeItem}/workspace`)).status, 403);
+  const designerItem = f.item("Design", "Designer");
+  assert.equal((await f.call("Designer", "GET", `content/${designerItem}/workspace`)).status, 200);
+  f.sqlite.close();
+});
+
+test("platform versions can be created and edited with concurrency, permissions, and activity history", async () => {
+  const f = fixture(); await f.start();
+  const id = f.item("Writing", "Creative");
+  const payload = {
+    platform: "TikTok", title: "TikTok cut", caption: "Opening caption", description: "Vertical edit",
+    hashtags: "#launch", cta: "Follow us", notes: "Keep it short", plannedPublishAt: "2026-10-04T09:30", status: "Writing",
+  };
+  assert.equal((await f.call("Viewer", "POST", `content/${id}/variants`, payload)).status, 403);
+  const created = await f.call("Social Media", "POST", `content/${id}/variants`, payload);
+  assert.equal(created.status, 201);
+  assert.equal(created.data.variant.platform, "TikTok");
+  assert.equal(created.data.variant.caption, "Opening caption");
+  const variantId = created.data.variant.id;
+  assert.equal((await f.call("Owner", "PUT", `variants/${variantId}`, { ...payload, version: 99, caption: "Stale" })).status, 409);
+  const edited = await f.call("Social Media", "PUT", `variants/${variantId}`, { ...payload, version: 1, caption: "Final caption", status: "Review" });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.data.variant.caption, "Final caption");
+  assert.equal(edited.data.variant.version, 2);
+  assert.equal((await f.call("Owner", "POST", `content/${id}/variants`, payload)).status, 409);
+  const workspace = await f.call("Owner", "GET", `content/${id}/workspace`);
+  assert.equal(workspace.data.variants[0].plannedPublishAt, "2026-10-04T09:30");
+  assert.ok(workspace.data.activities.some((x: any) => x.action === "platform_variant_created"));
+  assert.ok(workspace.data.activities.some((x: any) => x.action === "platform_variant_edited"));
+  f.sqlite.close();
+});
+
+test("Media Library upload, private preview, search, rename, and role restrictions work", async () => {
+  const f = fixture(); await f.start();
+  const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3, 4]);
+  assert.equal((await f.upload("Viewer", "blocked.png", "image/png", bytes)).status, 403);
+  assert.equal((await f.upload("Approver", "blocked.png", "image/png", bytes)).status, 403);
+  const uploaded = await f.upload("Designer", "launch-cover.png", "image/png", bytes);
+  assert.equal(uploaded.status, 201);
+  assert.equal(uploaded.data.asset.kind, "image");
+  assert.equal(uploaded.data.asset.fileSize, bytes.length);
+  const id = uploaded.data.asset.id;
+  const preview = await f.file("Viewer", id);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.get("content-type"), "image/png");
+  assert.deepEqual(new Uint8Array(await preview.arrayBuffer()), bytes);
+  const search = await f.call("Viewer", "GET", "media?query=cover&kind=image");
+  assert.equal(search.status, 200);
+  assert.equal(search.data.assets.length, 1);
+  assert.equal((await f.call("Creative", "PUT", `media/${id}`, { fileName: "not-allowed.png" })).status, 403);
+  const renamed = await f.call("Designer", "PUT", `media/${id}`, { fileName: "final-cover.png" });
+  assert.equal(renamed.status, 200);
+  assert.equal(renamed.data.asset.fileName, "final-cover.png");
+  assert.ok((f.sqlite.prepare("SELECT COUNT(*) n FROM activity_history WHERE action IN ('asset_uploaded','file_renamed')").get() as any).n >= 2);
+  f.sqlite.close();
+});
+
+test("master assets attach, detach, reorder, and block unsafe Media Library deletion", async () => {
+  const f = fixture(); await f.start();
+  const id = f.item("Design", "Designer");
+  const first = await f.upload("Owner", "main.png", "image/png", new Uint8Array([1, 2, 3]));
+  const second = await f.upload("Owner", "reference.pdf", "application/pdf", new Uint8Array([4, 5, 6, 7]));
+  const firstId = first.data.asset.id, secondId = second.data.asset.id;
+  const attachedFirst = await f.call("Owner", "POST", `content/${id}/assets`, { mediaAssetId: firstId, usage: "Main Asset" });
+  const attachedSecond = await f.call("Designer", "POST", `content/${id}/assets`, { mediaAssetId: secondId, usage: "Reference" });
+  assert.equal(attachedFirst.status, 201);
+  assert.equal(attachedSecond.status, 201);
+  assert.equal((await f.call("Owner", "DELETE", `media/${firstId}`)).status, 409);
+  const ids = attachedSecond.data.assets.map((asset: any) => asset.linkId).reverse();
+  const reordered = await f.call("Owner", "PATCH", `content/${id}/assets/reorder`, { ids });
+  assert.equal(reordered.status, 200);
+  assert.deepEqual(reordered.data.assets.map((asset: any) => asset.linkId), ids);
+  const linkId = reordered.data.assets.find((asset: any) => asset.id === firstId).linkId;
+  assert.equal((await f.call("Viewer", "DELETE", `content/${id}/assets/${linkId}`)).status, 403);
+  assert.equal((await f.call("Owner", "DELETE", `content/${id}/assets/${linkId}`)).status, 200);
+  assert.equal((await f.call("Owner", "DELETE", `media/${firstId}`)).status, 200);
+  assert.equal(f.objects.size, 1);
+  assert.ok((f.sqlite.prepare("SELECT COUNT(*) n FROM activity_history WHERE action IN ('asset_attached','assets_reordered','asset_detached','file_deleted')").get() as any).n >= 5);
+  f.sqlite.close();
+});
+
+test("platform-version assets stay linked independently and preserve Media Library files on variant deletion", async () => {
+  const f = fixture(); await f.start();
+  const id = f.item("Writing", "Creative");
+  const upload = await f.upload("Creative", "vertical.mp4", "video/mp4", new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]));
+  const created = await f.call("Creative", "POST", `content/${id}/variants`, {
+    platform: "Instagram", title: "Reel", caption: "Caption", description: "", hashtags: "", cta: "", notes: "",
+    plannedPublishAt: "", status: "Writing",
+  });
+  const variantId = created.data.variant.id;
+  const attached = await f.call("Creative", "POST", `variants/${variantId}/assets`, { mediaAssetId: upload.data.asset.id, usage: "Main Asset" });
+  assert.equal(attached.status, 201);
+  assert.equal(attached.data.assets[0].fileName, "vertical.mp4");
+  assert.equal((await f.call("Owner", "DELETE", `media/${upload.data.asset.id}`)).status, 409);
+  assert.equal((await f.call("Owner", "DELETE", `variants/${variantId}`)).status, 200);
+  const library = await f.call("Viewer", "GET", "media?kind=video");
+  assert.equal(library.data.assets.length, 1);
+  assert.equal(library.data.assets[0].attachmentCount, 0);
+  assert.equal((await f.call("Owner", "DELETE", `media/${upload.data.asset.id}`)).status, 200);
   f.sqlite.close();
 });

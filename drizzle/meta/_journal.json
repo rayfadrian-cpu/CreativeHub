@@ -22,6 +22,13 @@
       "when": 1790170746411,
       "tag": "0002_mean_klaw",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1790268550437,
+      "tag": "0003_milestone_two",
+      "breakpoints": true
     }
   ]
 }

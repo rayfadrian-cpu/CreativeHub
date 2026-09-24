@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity as ActivityIcon, ArrowUpRight, CalendarDays, Columns3, FileText, Grid2X2, Layers3, LogOut, Megaphone, Plus, RefreshCw, Settings, ShieldAlert, Tag, Users } from "lucide-react";
+import { Activity as ActivityIcon, ArrowUpRight, CalendarDays, Columns3, FileText, FolderOpen, Grid2X2, Layers3, LogOut, Megaphone, Plus, RefreshCw, Settings, ShieldAlert, Tag, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -10,6 +10,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { canCreate, managers, type ContentItem, type WorkspaceData } from "@/lib/hub-types";
 import { ActivityView, AllContentView, BrandsView, CalendarView, CampaignsView, Choice, Confirm, ContentEditor, ContentTable, EmptyState, PillarsView, StatusBadge, TeamView, WorkspaceSettings } from "./hub-views";
 import { Kanban } from "./kanban";
+import { ContentWorkspace, MediaLibraryView } from "./milestone-two";
 
 class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
@@ -26,10 +27,10 @@ export async function api<T = unknown>(path: string, method = "GET", body?: unkn
   return data;
 }
 
-export type View = "dashboard" | "brand" | "pillars" | "campaigns" | "plan" | "calendar" | "content" | "activity" | "team" | "settings";
+export type View = "dashboard" | "brand" | "pillars" | "campaigns" | "plan" | "calendar" | "content" | "media" | "activity" | "team" | "settings" | "detail";
 const nav = [
   ["dashboard", "Dashboard", Grid2X2], ["plan", "Content Plan", Layers3], ["calendar", "Calendar", CalendarDays],
-  ["content", "All Content", FileText], ["brand", "Brands", Tag], ["pillars", "Content Pillars", Columns3],
+  ["content", "All Content", FileText], ["media", "Media Library", FolderOpen], ["brand", "Brands", Tag], ["pillars", "Content Pillars", Columns3],
   ["campaigns", "Campaigns", Megaphone], ["activity", "Activity", ActivityIcon],
 ] as const;
 const titles: Record<View, [string, string]> = {
@@ -37,22 +38,25 @@ const titles: Record<View, [string, string]> = {
   plan: ["Content Plan", "Drag cards between stages. Every change is saved."],
   calendar: ["Calendar", "Manage planned publishing dates. Publishing remains manual."],
   content: ["All Content", "Search and filter the complete content library."],
+  media: ["Media Library", "Upload, organize, preview, and reuse creative files."],
   brand: ["Brands", "The identities behind your Campaigns, Pillars, and Content."],
   pillars: ["Content Pillars", "Organize each Brand around clear, repeatable themes."],
   campaigns: ["Campaigns", "Connect individual posts to a defined initiative."],
   activity: ["Activity", "A simple history of important workspace changes."],
   team: ["Team members", "Manage workspace access and responsibilities."],
   settings: ["Workspace settings", "The shared home for your creative work."],
+  detail: ["Content workspace", "Shape the brief, copy, platform versions, assets, and approval."],
 };
 
 export const dateLabel = (date: string) => date ? new Date(date + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "Not set";
 export const initials = (name: string) => name.split(/[ @]+/).filter(Boolean).slice(0, 2).map(x => x[0]).join("").toUpperCase();
 
-export default function CreativeHub({ user, signOutHref }: { user: { name: string; email: string }; signOutHref: string }) {
+export default function CreativeHub({ user, signOutHref, initialContentId = null }: { user: { name: string; email: string }; signOutHref: string; initialContentId?: number | null }) {
   const [data, setData] = useState<WorkspaceData | null>(null);
   const [error, setError] = useState("");
   const [accessDenied, setAccessDenied] = useState(false);
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>(initialContentId ? "detail" : "dashboard");
+  const [detailId, setDetailId] = useState<number | null>(initialContentId);
   const [editor, setEditor] = useState<ContentItem | "new" | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ContentItem | null>(null);
   const [busyIds, setBusyIds] = useState<number[]>([]);
@@ -76,10 +80,17 @@ export default function CreativeHub({ user, signOutHref }: { user: { name: strin
     return () => { active = false; };
   }, []);
   useEffect(() => {
-    const sync = () => { const name = location.hash.slice(1) as View; if (name in titles) setView(name); };
-    sync(); window.addEventListener("hashchange", sync); return () => window.removeEventListener("hashchange", sync);
+    const sync = () => {
+      const match = location.pathname.match(/^\/content\/(\d+)$/);
+      if (match) { setDetailId(Number(match[1])); setView("detail"); return; }
+      const name = location.hash.slice(1) as View;
+      setDetailId(null); setView(name in titles && name !== "detail" ? name : "dashboard");
+    };
+    sync(); window.addEventListener("hashchange", sync); window.addEventListener("popstate", sync);
+    return () => { window.removeEventListener("hashchange", sync); window.removeEventListener("popstate", sync); };
   }, []);
-  function navigate(next: View) { setView(next); window.history.replaceState(null, "", "#" + next); }
+  function navigate(next: Exclude<View, "detail">) { setDetailId(null); setView(next); window.history.pushState(null, "", "/#" + next); }
+  function openDetail(item: ContentItem) { setDetailId(item.id); setView("detail"); window.history.pushState(null, "", "/content/" + item.id); }
   async function move(item: ContentItem, status: ContentItem["status"], decision?: string) {
     if (busyRef.current.has(item.id)) return;
     busyRef.current.add(item.id); setBusyIds([...busyRef.current]);
@@ -123,22 +134,22 @@ export default function CreativeHub({ user, signOutHref }: { user: { name: strin
   const refreshKey = data?.items.map(x => `${x.id}:${x.version}`).join("|") ?? "";
   return <SidebarProvider style={{ "--sidebar-width": "218px" } as React.CSSProperties}>
     <Sidebar><SidebarHeader className="hub-sidebar-header"><div className="brand-lockup"><span className="brand-mark"><Layers3 size={20}/></span><span>Creative Hub</span></div><p className="workspace-label">{data?.workspace.name || "Content workspace"}</p></SidebarHeader><SidebarContent><Nav view={view} navigate={navigate} manage={!!actor && managers(actor.role)} owner={actor?.role === "Owner"}/></SidebarContent><SidebarFooter className="hub-profile"><div className="avatar">{initials(actor?.name || user.name)}</div><div className="profile-copy"><strong>{actor?.name || user.name}</strong><span>{actor?.role || "Workspace member"}</span></div><a href={signOutHref} target="_top" aria-label="Log out" title="Log out"><LogOut size={17}/></a></SidebarFooter></Sidebar>
-    <SidebarInset className="hub-main"><header className="hub-topbar"><div className="topbar-location"><SidebarTrigger/><span>{data?.workspace.name || "Creative Hub"}</span><span className="slash">/</span><strong>{titles[view][0]}</strong></div><div className="topbar-actions"><span className="private-label">Member-protected</span>{actor && canCreate(actor.role) && <Button onClick={() => setEditor("new")}><Plus size={16}/>New content</Button>}</div></header><div className="hub-page"><div className="page-heading"><div><h1>{titles[view][0]}</h1><p>{titles[view][1]}</p></div>{view === "dashboard" && <Button variant="outline" onClick={() => navigate("plan")}>Open content plan<ArrowUpRight size={16}/></Button>}</div>
+    <SidebarInset className="hub-main"><header className="hub-topbar"><div className="topbar-location"><SidebarTrigger/><span>{data?.workspace.name || "Creative Hub"}</span><span className="slash">/</span><strong>{titles[view][0]}</strong></div><div className="topbar-actions"><span className="private-label">Member-protected</span>{actor && canCreate(actor.role) && <Button onClick={() => setEditor("new")}><Plus size={16}/>New content</Button>}</div></header><div className="hub-page">{view !== "detail" && <div className="page-heading"><div><h1>{titles[view][0]}</h1><p>{titles[view][1]}</p></div>{view === "dashboard" && <Button variant="outline" onClick={() => navigate("plan")}>Open content plan<ArrowUpRight size={16}/></Button>}</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><Button variant="outline" onClick={() => void reload().catch(() => {})}><RefreshCw size={15}/>Retry</Button></div>}
       {!data && !error && <div className="loading-grid" aria-label="Loading workspace"><Skeleton className="h-28"/><Skeleton className="h-28"/><Skeleton className="h-28"/><Skeleton className="h-28"/><Skeleton className="col-span-full h-80"/></div>}
-      {data && <>{view === "dashboard" && <Dashboard data={data} navigate={navigate} open={setEditor}/>} {view === "plan" && <Kanban data={data} open={setEditor} move={move} busyIds={busyIds}/>} {view === "content" && <AllContentView data={data} open={setEditor} remove={setDeleteTarget} refreshKey={refreshKey}/>} {view === "calendar" && <CalendarView data={data} open={setEditor}/>} {view === "pillars" && <PillarsView data={data} reload={reload}/>} {view === "brand" && <BrandsView data={data} reload={reload}/>} {view === "campaigns" && <CampaignsView data={data} reload={reload}/>} {view === "activity" && <ActivityView/>} {view === "team" && <TeamView data={data} reload={reload}/>} {view === "settings" && <WorkspaceSettings data={data} reload={reload}/>}</>}
+      {data && <>{view === "dashboard" && <Dashboard data={data} navigate={navigate} open={openDetail}/>} {view === "plan" && <Kanban data={data} open={openDetail} move={move} busyIds={busyIds}/>} {view === "content" && <AllContentView data={data} open={openDetail} remove={setDeleteTarget} refreshKey={refreshKey}/>} {view === "calendar" && <CalendarView data={data} open={openDetail}/>} {view === "media" && <MediaLibraryView data={data}/>} {view === "pillars" && <PillarsView data={data} reload={reload}/>} {view === "brand" && <BrandsView data={data} reload={reload}/>} {view === "campaigns" && <CampaignsView data={data} reload={reload}/>} {view === "activity" && <ActivityView/>} {view === "team" && <TeamView data={data} reload={reload}/>} {view === "settings" && <WorkspaceSettings data={data} reload={reload}/>} {view === "detail" && detailId && <ContentWorkspace contentId={detailId} data={data} back={() => navigate("content")} changed={reload}/>}</>}
     </div></SidebarInset>
     {data && editor && <ContentEditor key={editor === "new" ? "new" : editor.id + ":" + editor.version} item={editor === "new" ? null : editor} data={data} close={() => setEditor(null)} save={saveContent} move={async (item, status, decision) => { await move(item, status, decision); setEditor(null); }}/>}<Confirm open={!!deleteTarget} close={() => setDeleteTarget(null)} title="Delete this content?" description={deleteTarget ? "“" + deleteTarget.title + "” will be permanently removed. An activity record will remain." : ""} label="Delete content" action={async () => { await api("content/" + deleteTarget!.id, "DELETE", { version: deleteTarget!.version }); setDeleteTarget(null); await reload(); toast.success("Content deleted"); }}/><Toaster theme="light" position="top-right" richColors/>
   </SidebarProvider>;
 }
 
-function Nav({ view, navigate, manage, owner }: { view: View; navigate: (view: View) => void; manage: boolean; owner: boolean }) {
+function Nav({ view, navigate, manage, owner }: { view: View; navigate: (view: Exclude<View, "detail">) => void; manage: boolean; owner: boolean }) {
   const { setOpenMobile } = useSidebar();
-  const go = (next: View) => { navigate(next); setOpenMobile(false); };
+  const go = (next: Exclude<View, "detail">) => { navigate(next); setOpenMobile(false); };
   return <nav className="hub-navigation" aria-label="Main navigation"><p>WORKSPACE</p><SidebarMenu>{nav.map(([next, label, Icon]) => <SidebarMenuItem key={next}><SidebarMenuButton isActive={next === view} onClick={() => go(next)}><Icon/><span>{label}</span></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu>{manage && <><p className="nav-settings-label">SETTINGS</p><SidebarMenu><SidebarMenuItem><SidebarMenuButton isActive={view === "team"} onClick={() => go("team")}><Users/><span>Team members</span></SidebarMenuButton></SidebarMenuItem>{owner && <SidebarMenuItem><SidebarMenuButton isActive={view === "settings"} onClick={() => go("settings")}><Settings/><span>Workspace</span></SidebarMenuButton></SidebarMenuItem>}</SidebarMenu></>}</nav>;
 }
 
-function Dashboard({ data, navigate, open }: { data: WorkspaceData; navigate: (view: View) => void; open: (item: ContentItem) => void }) {
+function Dashboard({ data, navigate, open }: { data: WorkspaceData; navigate: (view: Exclude<View, "detail">) => void; open: (item: ContentItem) => void }) {
   const [brandId, setBrandId] = useState("all");
   const [campaignId, setCampaignId] = useState("all");
   const today = new Date().toLocaleDateString("en-CA");
