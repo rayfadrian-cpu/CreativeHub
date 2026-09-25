@@ -20,6 +20,7 @@ import {
 } from "../lib/hub-types.ts";
 import { HubError } from "./hub-error.ts";
 import { handleMilestoneTwo } from "./milestone-two.ts";
+import { handleMilestoneThree, hasApprovedReview, recordEmbeddedStatusChange } from "./milestone-three.ts";
 
 type Identity = { userId: string; email: string; displayName: string };
 type Context = { db: D1Database; bucket?: R2Bucket; identity: Identity | null; ownerEmail: string };
@@ -247,25 +248,50 @@ async function ensureWorkspaceModel(db: D1Database, actor: Actor) {
   await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name, "Core records were linked to stable Brand, Campaign, and Pillar IDs.");
   }
 
-  const currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
+  let currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
     .bind(actor.workspaceId).first<{ modelVersion: number }>();
-  if ((currentVersion?.modelVersion ?? workspace.modelVersion) >= 3) return;
+  if ((currentVersion?.modelVersion ?? workspace.modelVersion) < 3) {
+    await db.prepare(`INSERT OR IGNORE INTO content_platform_variants
+      (workspace_id, content_id, platform, title, caption, description, hashtags, cta, notes, planned_publish_at, status)
+      SELECT workspace_id, id, platform, title, caption, '', '', '', '',
+        CASE WHEN publish_date = '' THEN '' ELSE publish_date || 'T09:00' END, status
+      FROM content_items
+      WHERE workspace_id = ? AND platform IN ('Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'YouTube')`)
+      .bind(actor.workspaceId).run();
+    const fallback = await db.prepare(`SELECT COUNT(*) AS count FROM content_items
+      WHERE workspace_id = ? AND platform != '' AND platform NOT IN ('Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'YouTube')`)
+      .bind(actor.workspaceId).first<{ count: number }>();
+    await db.prepare("UPDATE workspaces SET model_version = 3, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(actor.workspaceId).run();
+    await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
+      "Milestone 2 records were prepared and existing Platform values were migrated to platform versions.",
+      { modelVersion: 3, unsupportedLegacyPlatforms: Number(fallback?.count ?? 0) });
+  }
 
-  await db.prepare(`INSERT OR IGNORE INTO content_platform_variants
-    (workspace_id, content_id, platform, title, caption, description, hashtags, cta, notes, planned_publish_at, status)
-    SELECT workspace_id, id, platform, title, caption, '', '', '', '',
-      CASE WHEN publish_date = '' THEN '' ELSE publish_date || 'T09:00' END, status
-    FROM content_items
-    WHERE workspace_id = ? AND platform IN ('Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'YouTube')`)
-    .bind(actor.workspaceId).run();
-  const fallback = await db.prepare(`SELECT COUNT(*) AS count FROM content_items
-    WHERE workspace_id = ? AND platform != '' AND platform NOT IN ('Instagram', 'TikTok', 'Facebook', 'LinkedIn', 'YouTube')`)
-    .bind(actor.workspaceId).first<{ count: number }>();
-  await db.prepare("UPDATE workspaces SET model_version = 3, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+  currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
+    .bind(actor.workspaceId).first<{ modelVersion: number }>();
+  if ((currentVersion?.modelVersion ?? 0) >= 4) return;
+  await db.prepare(`INSERT INTO content_status_history
+    (workspace_id, content_id, from_status, to_status, actor_member_id, actor_name, note)
+    SELECT workspace_id, id, status, status, ?, ?, 'Milestone 3 history baseline.' FROM content_items c
+    WHERE workspace_id = ? AND NOT EXISTS (SELECT 1 FROM content_status_history h WHERE h.content_id = c.id)`)
+    .bind(actor.id, actor.name, actor.workspaceId).run();
+  await db.prepare(`INSERT OR IGNORE INTO approvals
+    (workspace_id, content_id, requested_by_member_id, status, content_version, submission_note,
+     decision_by_member_id, decision_note, decided_at)
+    SELECT workspace_id, id, COALESCE(creator_member_id, ?),
+      CASE WHEN status = 'Review' THEN 'pending' ELSE 'approved' END,
+      CASE WHEN status = 'Review' THEN version WHEN version > 0 THEN version - 1 ELSE 0 END, 'Migrated from the existing workflow.',
+      CASE WHEN status = 'Review' THEN NULL ELSE ? END,
+      CASE WHEN status = 'Review' THEN '' ELSE 'Existing approved content migrated into approval history.' END,
+      CASE WHEN status = 'Review' THEN '' ELSE CURRENT_TIMESTAMP END
+    FROM content_items c WHERE workspace_id = ? AND status IN ('Review', 'Approved', 'Scheduled')
+      AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.content_id = c.id)`)
+    .bind(actor.id, actor.id, actor.workspaceId).run();
+  await db.prepare("UPDATE workspaces SET model_version = 4, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(actor.workspaceId).run();
   await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
-    "Milestone 2 records were prepared and existing Platform values were migrated to platform versions.",
-    { modelVersion: 3, unsupportedLegacyPlatforms: Number(fallback?.count ?? 0) });
+    "Milestone 3 collaboration, approval, and status history records were prepared.", { modelVersion: 4 });
 }
 
 async function authenticate(ctx: Context): Promise<Actor> {
@@ -342,7 +368,7 @@ async function contentInput(db: D1Database, actor: Actor, payload: Record<string
     }
     if (input.status !== previous.status && !canMove(actor, previous, input.status)) deny();
     if (!fields.length && input.status === previous.status) deny();
-  } else if (!managers(actor.role) && input.status !== "Idea") deny();
+  } else if (input.status !== "Idea") deny();
 
   const brand = await db.prepare("SELECT id, name, archived FROM brands WHERE workspace_id = ? AND id = ?")
     .bind(actor.workspaceId, input.brandId).first<{ id: number; name: string; archived: number }>();
@@ -432,6 +458,8 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
     const [resource, key, action] = path;
     const method = request.method;
 
+    const milestoneThree = await handleMilestoneThree(request, path, { db, actor });
+    if (milestoneThree) return milestoneThree;
     const milestoneTwo = await handleMilestoneTwo(request, path, { db, bucket: ctx.bucket, actor });
     if (milestoneTwo) return milestoneTwo;
 
@@ -529,6 +557,9 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
           const payload = await body(request);
           ensureVersion(payload, item);
           const next = await contentInput(db, actor, payload, item);
+          if (next.status === "Scheduled" && next.status !== item.status && !await hasApprovedReview({ db, actor }, item)) {
+            throw new HubError("This content must be approved before it can be scheduled.", 409);
+          }
           const fields = ["title", "brandId", "campaignId", "pillarId", "objective", "brief", "targetAudience", "keyMessage", "contentDirection", "references", "format", "priority", "assigneeId", "pic", "deadline", "publishDate", "platform", "status", "caption", "copyHook", "copyCta", "copyNotes", "notes"] as const;
           const modified = fields.filter(field => next[field] !== item[field]);
           const reviewDecision = next.status !== item.status ? (next.status === "Approved" ? "approved" : next.status === "Revision" ? "revision" : "") : item.reviewDecision;
@@ -542,9 +573,10 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
               next.assigneeId, next.pic, next.deadline, next.publishDate, next.platform, next.status, next.caption, next.copyHook,
               next.copyCta, next.copyNotes, next.notes, reviewDecision, scope, item.id, item.version).run();
           changed(result);
+          await recordEmbeddedStatusChange({ db, actor }, item, { ...item, ...next, version: item.version + 1 });
           if (next.status !== item.status) {
-            await activity(db, actor, next.status === "Approved" || next.status === "Revision" ? "approval_action" : "status_changed",
-              "content", item.id, next.title, `Moved from ${item.status} to ${next.status}.`, { from: item.status, to: next.status });
+            await activity(db, actor, next.status === "Review" ? "review_requested" : "status_changed",
+              "content", item.id, next.title, next.status === "Review" ? "Submitted for review." : `Moved from ${item.status} to ${next.status}.`, { from: item.status, to: next.status });
           }
           const detailFields = modified.filter(x => x !== "status");
           const briefFields = detailFields.filter(x => ["objective", "targetAudience", "keyMessage", "contentDirection", "brief", "references", "notes"].includes(x));

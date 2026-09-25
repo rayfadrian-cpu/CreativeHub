@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `approvals_one_pending_per_content` ON `approvals` (`content_id`) WHERE "approvals"."status" = 'pending';

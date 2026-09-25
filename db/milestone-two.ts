@@ -4,6 +4,7 @@ import {
   type Actor, type ContentAsset, type ContentItem, type MediaAsset, type PlatformVariant,
 } from "../lib/hub-types.ts";
 import { HubError } from "./hub-error.ts";
+import { collaborationSnapshot } from "./milestone-three.ts";
 
 type Context = { db: D1Database; bucket?: R2Bucket; actor: Actor };
 type MediaRow = Omit<MediaAsset, "kind"> & { kind: MediaAsset["kind"] };
@@ -249,17 +250,21 @@ export async function handleMilestoneTwo(request: Request, path: string[], ctx: 
 
   if (resource === "content" && key && action === "workspace" && method === "GET") {
     const item = await loadItem(ctx, idOf(key));
-    const [itemVariants, assets, history] = await Promise.all([
+    const [itemVariants, assets, history, collaboration] = await Promise.all([
       variants(ctx, item.id), contentAssets(ctx, item.id),
       ctx.db.prepare(`SELECT id, actor_member_id AS actorMemberId, actor_name AS actorName, action,
         entity_type AS entityType, entity_id AS entityId, entity_title AS entityTitle, summary, created_at AS createdAt
         FROM activity_history WHERE workspace_id = ? AND entity_type = 'content' AND entity_id = ? ORDER BY id DESC LIMIT 100`)
         .bind(ctx.actor.workspaceId, String(item.id)).all(),
+      collaborationSnapshot(ctx, item),
     ]);
     return json({ item, variants: itemVariants, assets, activities: history.results,
+      comments: collaboration.comments, approvals: collaboration.approvals,
+      statusHistory: collaboration.statusHistory, currentApproval: collaboration.currentApproval,
       permissions: {
         manageAssets: canManageContentAssets(ctx.actor, item), manageVariants: canManageVariants(ctx.actor, item),
         uploadMedia: canUploadMedia(ctx.actor.role), approve: ["Owner", "Admin", "Approver"].includes(ctx.actor.role),
+        ...collaboration.permissions,
       },
     });
   }

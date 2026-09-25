@@ -74,7 +74,7 @@ function Filters({ data, value, change, includeDates = false }: { data: Workspac
   </div>;
 }
 
-export function ContentEditor({ item, data, close, save, move }: { item: ContentItem | null; data: WorkspaceData; close: () => void; save: (payload: Record<string, unknown>) => Promise<void>; move: (item: ContentItem, status: ContentItem["status"], decision?: string) => Promise<void> }) {
+export function ContentEditor({ item, data, close, save }: { item: ContentItem | null; data: WorkspaceData; close: () => void; save: (payload: Record<string, unknown>) => Promise<void> }) {
   const fields = editableFields(data.actor, item);
   const firstBrand = data.brands.find(x => !x.archived) ?? data.brands[0];
   const [form, setForm] = useState({
@@ -88,9 +88,8 @@ export function ContentEditor({ item, data, close, save, move }: { item: Content
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [reject, setReject] = useState(false);
   const enabled = (key: string) => fields.includes(key);
-  const moves = item ? statuses.filter(x => x === item.status || canMove(data.actor, item, x)) : managers(data.actor.role) ? statuses : ["Idea"];
+  const moves = item ? statuses.filter(x => x === item.status || canMove(data.actor, item, x)) : ["Idea"];
   const canSave = fields.length > 0 || !!item && moves.length > 1;
   const readonly = !canSave;
   const campaigns = data.campaigns.filter(x => x.brandId === form.brandId && (!x.archived || x.id === item?.campaignId));
@@ -124,9 +123,8 @@ export function ContentEditor({ item, data, close, save, move }: { item: Content
       <Field label="Master caption / copy" id="content-caption" wide><Textarea id="content-caption" maxLength={15000} rows={5} disabled={!enabled("caption")} value={form.caption} onChange={e => update("caption", e.target.value)}/></Field>
       <Field label="Notes" id="content-notes" wide><Textarea id="content-notes" maxLength={15000} rows={3} disabled={!enabled("notes")} value={form.notes} onChange={e => update("notes", e.target.value)}/></Field>
     </div>{item?.reviewDecision === "rejected" && <p className="form-error">Rejected — this content has been returned for revision.</p>}{item && <p className="record-meta">Created {item.createdAt || "—"} · Last updated {item.updatedAt || "—"}{item.creatorName ? " · By " + item.creatorName : ""}</p>}{error && <p className="form-error" role="alert">{error}</p>}
-      {item?.status === "Review" && ["Owner", "Admin", "Approver"].includes(data.actor.role) && <div className="review-actions"><Button type="button" variant="outline" onClick={() => void move(item, "Approved")} disabled={busy}>Approve</Button><Button type="button" variant="outline" onClick={() => void move(item, "Revision")} disabled={busy}>Request revision</Button><Button type="button" variant="destructive" onClick={() => setReject(true)} disabled={busy}>Reject</Button></div>}
+      {item?.status === "Review" && <p className="record-meta">Open the Content workspace Approval tab to approve, request revision, or reject with a recorded note.</p>}
     </div><DialogFooter><Button type="button" variant="outline" disabled={busy} onClick={close}>{readonly ? "Close" : "Cancel"}</Button>{canSave && <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Save content"}</Button>}</DialogFooter></form>
-    <Confirm open={reject} close={() => setReject(false)} title="Reject this content?" description="The item will move to Revision and be marked as rejected. It will not be deleted." label="Reject content" action={() => move(item!, "Revision", "rejected")}/>
   </DialogContent></Dialog>;
 }
 

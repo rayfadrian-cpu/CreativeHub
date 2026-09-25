@@ -1,6 +1,6 @@
 # Creative Hub
 
-Creative Hub is a private content-management workspace for planning social media content. Milestones 1 and 2 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, and Activity History.
+Creative Hub is a private content-management workspace for planning social media content. Milestones 1–3 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, team discussions, approval decisions, and Activity History.
 
 Creative Hub does **not** publish to social media yet. The Scheduled status records the team's plan only.
 
@@ -70,6 +70,8 @@ Migration `0002_mean_klaw.sql` is intentionally additive. It creates the improve
 
 Migration `0003_milestone_two.sql` is also additive. It adds Media Library metadata, platform versions, attachment tables, and structured Brief and Master Copy fields. The version-3 backfill creates one platform version from each supported legacy Platform value without deleting or overwriting the original Content data. See `docs/milestone-2-migration.md` for deployment and recovery details.
 
+Migrations `0004_certain_living_mummy.sql` and `0005_mighty_frog_thor.sql` are additive Milestone 3 migrations. They add discussions, approval records, workflow status history, and a database rule that permits only one pending review per Content item. The version-4 backfill creates safe baseline records for existing Review, Approved, and Scheduled content. See `docs/milestone-3-migration.md` for deployment and recovery details.
+
 ## Media Library limits
 
 - Images and documents: up to 25 MB each.
@@ -107,6 +109,10 @@ The test suite covers:
 - platform-version creation, editing, and concurrency protection;
 - Media Library upload, private preview, search, rename, and deletion permissions;
 - Content and platform-version attachment safety.
+- discussion comments, replies, resolving, and role permissions;
+- review submission, approval, revision, and rejection notes;
+- approval-gated scheduling and approval queue visibility;
+- workflow status history and collaboration activity records.
 
 ## Production deployment
 
@@ -137,10 +143,9 @@ If a deployment fails after a migration is applied, do not edit or replay the ap
 
 ## Current scope
 
-Milestone 2 ends at the creative workspace, Media Library, and platform-specific preparation. The following are intentionally not included yet:
+Milestone 3 ends at collaboration, approval, and activity history. The following are intentionally not included yet:
 
-- Working comments, mentions, or discussions
-- Expanded multi-step collaboration and approval tools beyond the existing workflow
+- @mentions and notifications
 - Social media account connections
 - Publishing queue and automatic publishing
 - Publishing logs

@@ -52,6 +52,22 @@ export type Activity = {
   id: number; actorMemberId: number | null; actorName: string; action: string; entityType: string;
   entityId: string; entityTitle: string; summary: string; createdAt: string;
 };
+export type Comment = {
+  id: number; contentId: number; authorMemberId: number | null; authorName: string; parentId: number | null;
+  body: string; resolved: number; resolvedByMemberId: number | null; resolvedByName: string;
+  resolvedAt: string; createdAt: string; updatedAt: string;
+};
+export type ApprovalRecord = {
+  id: number; contentId: number; contentTitle?: string; contentStatus?: Status;
+  requestedByMemberId: number | null; requestedByName: string; requestedAt: string;
+  status: "pending" | "approved" | "revision" | "rejected" | "cancelled"; contentVersion: number;
+  submissionNote: string; decisionByMemberId: number | null; decisionByName: string;
+  decisionNote: string; decidedAt: string;
+};
+export type StatusHistory = {
+  id: number; contentId: number; fromStatus: Status; toStatus: Status;
+  actorMemberId: number | null; actorName: string; note: string; createdAt: string;
+};
 export type WorkspaceData = {
   actor: Actor; workspace: Workspace; members: Member[]; brands: Brand[]; pillars: Pillar[];
   campaigns: Campaign[]; items: ContentItem[];
@@ -65,21 +81,33 @@ export const canDelete = (role: Role) => managers(role);
 export const canUploadMedia = (role: Role) => !["Approver", "Viewer"].includes(role);
 export const canManageLibraryAsset = (actor: Actor, asset?: Pick<MediaAsset, "uploaderMemberId">) => managers(actor.role) || actor.role === "Designer" && (!asset || asset.uploaderMemberId === actor.id);
 export const canSee = (actor: Actor, item: ContentItem) => actor.role !== "Designer" || item.assigneeId === actor.id;
+export const canComment = (actor: Actor, item: ContentItem) => canSee(actor, item) && actor.role !== "Viewer";
+export const canResolveComment = (actor: Actor, item: ContentItem, authorMemberId?: number | null) => canSee(actor, item) &&
+  (managers(actor.role) || actor.role === "Content Strategist" || actor.role === "Approver" || authorMemberId === actor.id);
+export const canDecideApproval = (actor: Actor, item: ContentItem) => canSee(actor, item) && ["Owner", "Admin", "Approver"].includes(actor.role);
+export const canSubmitReview = (actor: Actor, item: ContentItem) => {
+  if (!canSee(actor, item) || ["Review", "Approved", "Scheduled"].includes(item.status)) return false;
+  if (strategists(actor.role)) return true;
+  if (actor.role === "Creative") return item.assigneeId === actor.id;
+  if (actor.role === "Designer") return item.assigneeId === actor.id && item.status === "Design";
+  return false;
+};
 
 export function canMove(actor: Actor, item: ContentItem, to: Status) {
   if (!statuses.includes(to) || !canSee(actor, item)) return false;
   if (item.status === to) return true;
+  if (to === "Approved" || item.status === "Review" && to === "Revision") return false;
+  if (to === "Scheduled") return item.status === "Approved" && (managers(actor.role) || actor.role === "Social Media");
   if (managers(actor.role)) return true;
   if (actor.role === "Content Strategist") return !["Approved", "Scheduled"].includes(item.status) && !["Approved", "Scheduled"].includes(to);
   if (actor.role === "Creative") return item.assigneeId === actor.id && !["Approved", "Scheduled"].includes(item.status) && !["Approved", "Scheduled"].includes(to);
   if (actor.role === "Designer") return item.assigneeId === actor.id && ["Design", "Review"].includes(item.status) && ["Design", "Review"].includes(to);
-  if (actor.role === "Approver") return item.status === "Review" && ["Approved", "Revision"].includes(to);
-  if (actor.role === "Social Media") return item.status === "Approved" && to === "Scheduled";
   return false;
 }
 
 export function editableFields(actor: Actor, item: ContentItem | null): string[] {
   const all = ["title", "brandId", "campaignId", "pillarId", "objective", "brief", "targetAudience", "keyMessage", "contentDirection", "references", "format", "priority", "assigneeId", "pic", "deadline", "publishDate", "platform", "caption", "copyHook", "copyCta", "copyNotes", "notes"];
+  if (item && ["Review", "Approved", "Scheduled"].includes(item.status)) return [];
   if (strategists(actor.role)) return all;
   if (actor.role === "Creative" && (!item || (item.assigneeId === actor.id && !["Approved", "Scheduled"].includes(item.status)))) return all.filter(x => !["assigneeId", "pic"].includes(x));
   if (actor.role === "Designer" && item?.assigneeId === actor.id && ["Design", "Review"].includes(item.status)) return ["notes"];
@@ -87,5 +115,7 @@ export function editableFields(actor: Actor, item: ContentItem | null): string[]
   return [];
 }
 
-export const canManageContentAssets = (actor: Actor, item: ContentItem) => managers(actor.role) || actor.role === "Content Strategist" || ["Creative", "Designer"].includes(actor.role) && item.assigneeId === actor.id;
-export const canManageVariants = (actor: Actor, item: ContentItem) => managers(actor.role) || actor.role === "Content Strategist" || actor.role === "Social Media" || actor.role === "Creative" && item.assigneeId === actor.id;
+export const canManageContentAssets = (actor: Actor, item: ContentItem) => !["Review", "Approved", "Scheduled"].includes(item.status) &&
+  (managers(actor.role) || actor.role === "Content Strategist" || ["Creative", "Designer"].includes(actor.role) && item.assigneeId === actor.id);
+export const canManageVariants = (actor: Actor, item: ContentItem) => !["Review", "Approved", "Scheduled"].includes(item.status) &&
+  (managers(actor.role) || actor.role === "Content Strategist" || actor.role === "Social Media" || actor.role === "Creative" && item.assigneeId === actor.id);

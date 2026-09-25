@@ -12,15 +12,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
-  assetUsages, canManageLibraryAsset, canMove, canUploadMedia, contentFormats, editableFields, priorities, statuses, variantPlatforms,
-  type Activity, type ContentAsset, type ContentItem, type MediaAsset, type PlatformVariant, type WorkspaceData,
+  assetUsages, canManageLibraryAsset, canUploadMedia, contentFormats, editableFields, priorities, statuses, variantPlatforms,
+  type Activity, type ApprovalRecord, type Comment, type ContentAsset, type ContentItem, type MediaAsset,
+  type PlatformVariant, type StatusHistory, type WorkspaceData,
 } from "@/lib/hub-types";
 import { api, dateLabel } from "./creative-hub";
 import { Choice, Confirm, EmptyState, Field, PriorityBadge, StatusBadge, options } from "./hub-views";
+import { ApprovalPanel, DiscussionPanel } from "./milestone-three";
 
 type Detail = {
   item: ContentItem; variants: PlatformVariant[]; assets: ContentAsset[]; activities: Activity[];
-  permissions: { manageAssets: boolean; manageVariants: boolean; uploadMedia: boolean; approve: boolean };
+  comments: Comment[]; approvals: ApprovalRecord[]; statusHistory: StatusHistory[]; currentApproval: ApprovalRecord | null;
+  permissions: {
+    manageAssets: boolean; manageVariants: boolean; uploadMedia: boolean; approve: boolean;
+    comment: boolean; submitReview: boolean; decideApproval: boolean; resolveAllComments: boolean;
+  };
 };
 
 const bytes = (value: number) => value < 1024 ? `${value} B` : value < 1024 ** 2 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 ** 2).toFixed(1)} MB`;
@@ -130,8 +136,8 @@ export function ContentWorkspace({ contentId, data, back, changed }: { contentId
       <TabsContent value="copy"><Copy item={item} fields={fields} save={save}/></TabsContent>
       <TabsContent value="platforms"><PlatformVersions detail={detail} reload={load}/></TabsContent>
       <TabsContent value="assets"><AssetAttachments contentId={item.id} assets={detail.assets} canManage={detail.permissions.manageAssets} canUpload={detail.permissions.uploadMedia} reload={load}/></TabsContent>
-      <TabsContent value="discussion"><section className="workspace-section discussion-placeholder"><div className="placeholder-icon">•••</div><h2>Discussion arrives in Milestone 3</h2><p>This space is reserved for comments, mentions, and team conversations. No placeholder messages are stored yet.</p></section></TabsContent>
-      <TabsContent value="approval"><Approval item={item} actor={data.actor} reload={async () => { await load(); await changed(); }}/></TabsContent>
+      <TabsContent value="discussion"><DiscussionPanel item={item} actor={data.actor} comments={detail.comments} permissions={detail.permissions} reload={load}/></TabsContent>
+      <TabsContent value="approval"><ApprovalPanel item={item} approvals={detail.approvals} currentApproval={detail.currentApproval} statusHistory={detail.statusHistory} permissions={detail.permissions} reload={async () => { await load(); await changed(); }}/></TabsContent>
       <TabsContent value="activity"><ActivityTimeline activities={detail.activities}/></TabsContent>
     </Tabs>
   </div>;
@@ -148,7 +154,7 @@ function Overview({ item, data, fields, save }: { item: ContentItem; data: Works
     <Field label="Brand" id="detail-brand"><Choice id="detail-brand" label="Brand" value={String(form.brandId ?? "")} disabled={!enabled("brandId")} options={data.brands.map(x => ({ value: String(x.id), label: x.name }))} onChange={value => setForm({ ...form, brandId: Number(value), campaignId: null, pillarId: null })}/></Field>
     <Field label="Campaign" id="detail-campaign"><Choice id="detail-campaign" label="Campaign" value={form.campaignId == null ? "_none" : String(form.campaignId)} disabled={!enabled("campaignId")} options={[{ value: "_none", label: "No Campaign" }, ...campaigns.map(x => ({ value: String(x.id), label: x.name }))]} onChange={value => update("campaignId", value === "_none" ? null : Number(value))}/></Field>
     <Field label="Content Pillar" id="detail-pillar"><Choice id="detail-pillar" label="Content Pillar" value={form.pillarId == null ? "_none" : String(form.pillarId)} disabled={!enabled("pillarId")} options={[{ value: "_none", label: "No Pillar" }, ...pillars.map(x => ({ value: String(x.id), label: x.name }))]} onChange={value => update("pillarId", value === "_none" ? null : Number(value))}/></Field>
-    <Field label="Status" id="detail-status"><Choice id="detail-status" label="Status" value={form.status} disabled={!enabled("status") && !canMove(data.actor, item, form.status)} options={options(statuses.filter(status => status === item.status || canMove(data.actor, item, status)))} onChange={value => update("status", value)}/></Field>
+    <Field label="Status" id="detail-status"><Choice id="detail-status" label="Status" value={form.status} disabled options={options([item.status])} onChange={value => update("status", value)}/></Field>
     <Field label="Priority" id="detail-priority"><Choice id="detail-priority" label="Priority" value={form.priority} disabled={!enabled("priority")} options={options(priorities)} onChange={value => update("priority", value)}/></Field>
     <Field label="PIC / owner" id="detail-assignee"><Choice id="detail-assignee" label="PIC / owner" value={form.assigneeId == null ? "_none" : String(form.assigneeId)} disabled={!enabled("assigneeId")} options={[{ value: "_none", label: "Unassigned / named PIC" }, ...data.members.filter(x => x.status !== "Inactive").map(x => ({ value: String(x.id), label: x.name }))]} onChange={value => { const id = value === "_none" ? null : Number(value); setForm({ ...form, assigneeId: id, pic: id ? data.members.find(x => x.id === id)?.name ?? "" : form.pic }); }}/></Field>
     {form.assigneeId == null && <Field label="Named PIC" id="detail-pic"><Input id="detail-pic" value={form.pic} disabled={!enabled("pic")} onChange={e => update("pic", e.target.value)}/></Field>}
@@ -212,12 +218,6 @@ function AssetAttachments({ contentId, variant, assets, canManage, canUpload, re
     <div className="attached-grid">{assets.map((asset, index) => <article key={asset.linkId} className="attached-card"><button className="attached-thumb" onClick={() => setPreview(asset)}>{asset.kind === "image" ? <img src={`/api/hub/media/${asset.id}/file`} alt=""/> : mediaIcon(asset.kind)}</button><div><strong>{asset.fileName}</strong><span>{asset.usage} · {bytes(asset.fileSize)}</span></div>{canManage && <div className="attached-actions">{!variant && <><Button size="icon" variant="ghost" disabled={!index} aria-label="Move asset up" onClick={() => void reorder(index, -1)}><ArrowUp/></Button><Button size="icon" variant="ghost" disabled={index === assets.length - 1} aria-label="Move asset down" onClick={() => void reorder(index, 1)}><ArrowDown/></Button></>}<Button size="icon" variant="ghost" aria-label={`Detach ${asset.fileName}`} onClick={async () => { await api(`${endpoint}/${asset.linkId}`, "DELETE", {}); await reload(); await refreshLibrary(); toast.success("Asset detached; library file preserved"); }}><X/></Button></div>}</article>)}</div>
     {!assets.length && <p className="empty-inline">No assets attached yet.</p>}<MediaPreview asset={preview} close={() => setPreview(null)}/>
   </div>;
-}
-
-function Approval({ item, actor, reload }: { item: ContentItem; actor: WorkspaceData["actor"]; reload: () => Promise<void> }) {
-  const [busy, setBusy] = useState(false); const moves = statuses.filter(status => status !== item.status && canMove(actor, item, status));
-  const move = async (status: ContentItem["status"], decision?: string) => { setBusy(true); try { await api(`content/${item.id}/status`, "PATCH", { version: item.version, status, ...(decision ? { decision } : {}) }); await reload(); toast.success(`Moved to ${status}`); } catch (issue) { toast.error((issue as Error).message); } finally { setBusy(false); } };
-  return <Section title="Approval" description="Review the current state and make only the transitions allowed for your role."><div className="approval-panel"><div><span>Current status</span><StatusBadge status={item.status}/>{item.reviewDecision && <p>Latest decision: {item.reviewDecision}</p>}</div>{item.status === "Review" && ["Owner", "Admin", "Approver"].includes(actor.role) ? <div className="approval-actions"><Button disabled={busy} onClick={() => void move("Approved")}>Approve</Button><Button variant="outline" disabled={busy} onClick={() => void move("Revision")}>Request revision</Button><Button variant="destructive" disabled={busy} onClick={() => void move("Revision", "rejected")}>Reject</Button></div> : moves.length ? <div className="approval-actions">{moves.map(status => <Button key={status} variant="outline" disabled={busy} onClick={() => void move(status)}>Move to {status}</Button>)}</div> : <p className="empty-inline">No approval action is available for your role at this stage.</p>}</div></Section>;
 }
 
 function ActivityTimeline({ activities }: { activities: Activity[] }) {

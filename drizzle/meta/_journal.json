@@ -29,6 +29,20 @@
       "when": 1790268550437,
       "tag": "0003_milestone_two",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1790314873613,
+      "tag": "0004_certain_living_mummy",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1790314936901,
+      "tag": "0005_mighty_frog_thor",
+      "breakpoints": true
     }
   ]
 }

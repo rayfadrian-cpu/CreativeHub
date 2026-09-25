@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, sqliteTable, text, uniqueIndex, type AnySQLiteColumn } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
 
 export const workspaces = sqliteTable("workspaces", {
@@ -133,6 +133,56 @@ export const activityHistory = sqliteTable("activity_history", {
   context: text("context").notNull().default("{}"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [index("idx_activity_workspace_created").on(table.workspaceId, table.createdAt)]);
+
+export const comments = sqliteTable("comments", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "cascade" }),
+  authorMemberId: integer("author_member_id").references(() => members.id, { onDelete: "set null" }),
+  parentId: integer("parent_id").references((): AnySQLiteColumn => comments.id, { onDelete: "cascade" }),
+  body: text("body").notNull(),
+  resolved: integer("resolved").notNull().default(0),
+  resolvedByMemberId: integer("resolved_by_member_id").references(() => members.id, { onDelete: "set null" }),
+  resolvedAt: text("resolved_at").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_comments_workspace_content_created").on(table.workspaceId, table.contentId, table.createdAt),
+  index("idx_comments_parent").on(table.parentId),
+]);
+
+export const approvals = sqliteTable("approvals", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "cascade" }),
+  requestedByMemberId: integer("requested_by_member_id").references(() => members.id, { onDelete: "set null" }),
+  requestedAt: text("requested_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  status: text("status").notNull().default("pending"),
+  contentVersion: integer("content_version").notNull(),
+  submissionNote: text("submission_note").notNull().default(""),
+  decisionByMemberId: integer("decision_by_member_id").references(() => members.id, { onDelete: "set null" }),
+  decisionNote: text("decision_note").notNull().default(""),
+  decidedAt: text("decided_at").notNull().default(""),
+}, (table) => [
+  index("idx_approvals_workspace_status_requested").on(table.workspaceId, table.status, table.requestedAt),
+  index("idx_approvals_content_requested").on(table.contentId, table.requestedAt),
+  uniqueIndex("approvals_one_pending_per_content").on(table.contentId).where(sql`${table.status} = 'pending'`),
+]);
+
+export const contentStatusHistory = sqliteTable("content_status_history", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "cascade" }),
+  fromStatus: text("from_status").notNull(),
+  toStatus: text("to_status").notNull(),
+  actorMemberId: integer("actor_member_id").references(() => members.id, { onDelete: "set null" }),
+  actorName: text("actor_name").notNull(),
+  note: text("note").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_content_status_history_content_created").on(table.contentId, table.createdAt),
+  index("idx_content_status_history_workspace_created").on(table.workspaceId, table.createdAt),
+]);
 
 export const mediaAssets = sqliteTable("media_assets", {
   id: integer("id").primaryKey({ autoIncrement: true }),
