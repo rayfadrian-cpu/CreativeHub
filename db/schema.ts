@@ -252,6 +252,58 @@ export const platformVariantMediaAssets = sqliteTable("platform_variant_media_as
   index("idx_variant_media_assets_variant_position").on(table.variantId, table.position),
 ]);
 
+export const publishJobs = sqliteTable("publish_jobs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "restrict" }),
+  variantId: integer("variant_id").notNull().references(() => contentPlatformVariants.id, { onDelete: "restrict" }),
+  platform: text("platform").notNull(),
+  accountLabel: text("account_label").notNull().default("Not connected"),
+  scheduledAt: text("scheduled_at").notNull(),
+  status: text("status").notNull().default("scheduled"),
+  attemptCount: integer("attempt_count").notNull().default(0),
+  maxAttempts: integer("max_attempts").notNull().default(3),
+  nextAttemptAt: text("next_attempt_at").notNull().default(""),
+  lockedAt: text("locked_at").notNull().default(""),
+  lastErrorCode: text("last_error_code").notNull().default(""),
+  lastErrorMessage: text("last_error_message").notNull().default(""),
+  createdByMemberId: integer("created_by_member_id").references(() => members.id, { onDelete: "set null" }),
+  cancelledByMemberId: integer("cancelled_by_member_id").references(() => members.id, { onDelete: "set null" }),
+  externalPostId: text("external_post_id").notNull().default(""),
+  externalPostUrl: text("external_post_url").notNull().default(""),
+  completedAt: text("completed_at").notNull().default(""),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_publish_jobs_workspace_status_schedule").on(table.workspaceId, table.status, table.scheduledAt),
+  index("idx_publish_jobs_content").on(table.contentId),
+  index("idx_publish_jobs_variant").on(table.variantId),
+  uniqueIndex("publish_jobs_one_active_per_variant").on(table.variantId).where(sql`${table.status} IN ('scheduled', 'queued', 'processing', 'retrying', 'blocked')`),
+]);
+
+export const publishLogs = sqliteTable("publish_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id, { onDelete: "restrict" }),
+  publishJobId: integer("publish_job_id").notNull().references(() => publishJobs.id, { onDelete: "restrict" }),
+  contentId: integer("content_id").notNull().references(() => contentItems.id, { onDelete: "restrict" }),
+  variantId: integer("variant_id").notNull().references(() => contentPlatformVariants.id, { onDelete: "restrict" }),
+  platform: text("platform").notNull(),
+  accountLabel: text("account_label").notNull().default("Not connected"),
+  attemptNumber: integer("attempt_number").notNull(),
+  requestAt: text("request_at").notNull(),
+  responseAt: text("response_at").notNull(),
+  status: text("status").notNull(),
+  externalPostId: text("external_post_id").notNull().default(""),
+  externalPostUrl: text("external_post_url").notNull().default(""),
+  errorCode: text("error_code").notNull().default(""),
+  errorMessage: text("error_message").notNull().default(""),
+  context: text("context").notNull().default("{}"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("idx_publish_logs_workspace_created").on(table.workspaceId, table.createdAt),
+  index("idx_publish_logs_job_attempt").on(table.publishJobId, table.attemptNumber),
+]);
+
 // Retained for one-way migration compatibility. New code uses brands and campaigns.
 export const collections = sqliteTable("collections", {
   id: integer("id").primaryKey({ autoIncrement: true }),

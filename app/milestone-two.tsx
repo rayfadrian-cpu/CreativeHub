@@ -13,12 +13,13 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   assetUsages, canManageLibraryAsset, canUploadMedia, contentFormats, editableFields, priorities, statuses, variantPlatforms,
-  type Activity, type ApprovalRecord, type Comment, type ContentAsset, type ContentItem, type MediaAsset,
+  type Activity, type Actor, type ApprovalRecord, type Comment, type ContentAsset, type ContentItem, type MediaAsset,
   type PlatformVariant, type StatusHistory, type WorkspaceData,
 } from "@/lib/hub-types";
 import { api, dateLabel } from "./creative-hub";
 import { Choice, Confirm, EmptyState, Field, PriorityBadge, StatusBadge, options } from "./hub-views";
 import { ApprovalPanel, DiscussionPanel } from "./milestone-three";
+import { ScheduleVariantButton } from "./milestone-four";
 
 type Detail = {
   item: ContentItem; variants: PlatformVariant[]; assets: ContentAsset[]; activities: Activity[];
@@ -134,7 +135,7 @@ export function ContentWorkspace({ contentId, data, back, changed }: { contentId
       <TabsContent value="overview"><Overview item={item} data={data} fields={fields} save={save}/></TabsContent>
       <TabsContent value="brief"><Brief item={item} fields={fields} save={save}/></TabsContent>
       <TabsContent value="copy"><Copy item={item} fields={fields} save={save}/></TabsContent>
-      <TabsContent value="platforms"><PlatformVersions detail={detail} reload={load}/></TabsContent>
+      <TabsContent value="platforms"><PlatformVersions detail={detail} actor={data.actor} reload={load}/></TabsContent>
       <TabsContent value="assets"><AssetAttachments contentId={item.id} assets={detail.assets} canManage={detail.permissions.manageAssets} canUpload={detail.permissions.uploadMedia} reload={load}/></TabsContent>
       <TabsContent value="discussion"><DiscussionPanel item={item} actor={data.actor} comments={detail.comments} permissions={detail.permissions} reload={load}/></TabsContent>
       <TabsContent value="approval"><ApprovalPanel item={item} approvals={detail.approvals} currentApproval={detail.currentApproval} statusHistory={detail.statusHistory} permissions={detail.permissions} reload={async () => { await load(); await changed(); }}/></TabsContent>
@@ -182,11 +183,11 @@ function StructuredForm<T extends Record<string, string>>({ title, description, 
   return <Section title={title} description={description}><form className="structured-form" onSubmit={async e => { e.preventDefault(); setBusy(true); try { await save(form); } catch (issue) { toast.error((issue as Error).message); } finally { setBusy(false); } }}>{Object.entries(form).map(([key, value]) => <Field key={key} label={labels[key]} id={`field-${key}`} wide><Textarea id={`field-${key}`} rows={rows[key]} disabled={!fields.includes(key)} value={value} onChange={e => setForm(current => ({ ...current, [key]: e.target.value } as T))}/></Field>)}{editable && <div className="detail-save"><Button disabled={busy}>{busy ? "Saving…" : button}</Button></div>}</form></Section>;
 }
 
-function PlatformVersions({ detail, reload }: { detail: Detail; reload: () => Promise<void> }) {
+function PlatformVersions({ detail, actor, reload }: { detail: Detail; actor: Actor; reload: () => Promise<void> }) {
   const [edit, setEdit] = useState<PlatformVariant | "new" | null>(null); const [remove, setRemove] = useState<PlatformVariant | null>(null);
   return <Section title="Platform versions" description="Prepare channel-specific copy and assets without changing the Master Copy.">
     <div className="section-toolbar"><span>{detail.variants.length} platform version{detail.variants.length === 1 ? "" : "s"}</span>{detail.permissions.manageVariants && <Button onClick={() => setEdit("new")}><Plus/>Add version</Button>}</div>
-    <div className="variant-grid">{detail.variants.map(variant => <article className="variant-card" key={variant.id}><header><span className="platform-chip">{variant.platform}</span><StatusBadge status={variant.status}/></header><h3>{variant.title || detail.item.title}</h3><p>{variant.caption || variant.description || "No platform copy yet."}</p><div className="variant-meta"><span>{variant.plannedPublishAt ? variant.plannedPublishAt.replace("T", " · ") : "No publish time"}</span><span>{variant.assets.length} assets</span></div><footer><Button size="sm" variant="ghost" onClick={() => setEdit(variant)}>{detail.permissions.manageVariants ? "Edit" : "View"}</Button>{detail.permissions.manageVariants && <Button size="icon" variant="ghost" aria-label={`Delete ${variant.platform} version`} onClick={() => setRemove(variant)}><Trash2/></Button>}</footer></article>)}</div>
+    <div className="variant-grid">{detail.variants.map(variant => <article className="variant-card" key={variant.id}><header><span className="platform-chip">{variant.platform}</span><StatusBadge status={variant.status}/></header><h3>{variant.title || detail.item.title}</h3><p>{variant.caption || variant.description || "No platform copy yet."}</p><div className="variant-meta"><span>{variant.plannedPublishAt ? variant.plannedPublishAt.replace("T", " · ") : "No publish time"}</span><span>{variant.assets.length} assets</span></div><footer><Button size="sm" variant="ghost" onClick={() => setEdit(variant)}>{detail.permissions.manageVariants ? "Edit" : "View"}</Button><ScheduleVariantButton actor={actor} item={detail.item} variant={variant} scheduled={reload}/>{detail.permissions.manageVariants && <Button size="icon" variant="ghost" aria-label={`Delete ${variant.platform} version`} onClick={() => setRemove(variant)}><Trash2/></Button>}</footer></article>)}</div>
     {!detail.variants.length && <EmptyState title="No platform versions yet" description="Add Instagram, TikTok, Facebook, LinkedIn, or YouTube preparation records."/>}
     {edit && <VariantEditor item={detail.item} variant={edit === "new" ? null : edit} canManage={detail.permissions.manageVariants} close={() => setEdit(null)} saved={async () => { setEdit(null); await reload(); }}/>} 
     <Confirm open={!!remove} close={() => setRemove(null)} title="Delete this platform version?" description="Its Media Library files will be preserved." label="Delete version" action={async () => { await api(`variants/${remove!.id}`, "DELETE", {}); await reload(); toast.success("Platform version deleted"); }}/>

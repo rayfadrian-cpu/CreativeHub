@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { handleHub } from "../db/hub-service.ts";
+import { processDuePublishJobs } from "../db/milestone-four.ts";
 import { roles, statuses, type Role } from "../lib/hub-types.ts";
 
 let fixtureSequence = 0;
@@ -108,7 +109,7 @@ function fixture() {
     }
     return id;
   }
-  return { sqlite, objects, call, upload, file, start, memberId, brandId, pillarId, item };
+  return { sqlite, db, objects, call, upload, file, start, memberId, brandId, pillarId, item };
 }
 
 test("safe migration preserves every legacy content value and links stable IDs", async () => {
@@ -126,7 +127,7 @@ test("safe migration preserves every legacy content value and links stable IDs",
   assert.ok(data.items[0].brandId);
   assert.ok(data.items[0].pillarId);
   assert.ok(data.items[0].campaignId);
-  assert.equal((f.sqlite.prepare("SELECT model_version FROM workspaces WHERE id = 'main'").get() as any).model_version, 4);
+  assert.equal((f.sqlite.prepare("SELECT model_version FROM workspaces WHERE id = 'main'").get() as any).model_version, 5);
   const variant = f.sqlite.prepare("SELECT platform, title, caption, notes FROM content_platform_variants WHERE content_id = 42").get() as any;
   assert.deepEqual([variant.platform, variant.title, variant.caption, variant.notes], ["Instagram", "Preserve me", "Original caption", ""]);
   assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM collections").get() as any).n, 0);
@@ -490,5 +491,75 @@ test("approval queue is workspace-scoped and returns pending reviews with conten
   const designer = await f.call("Designer", "GET", "approvals?status=pending");
   assert.equal(designer.data.approvals.length, 1);
   assert.equal(designer.data.approvals[0].contentId, designerId);
+  f.sqlite.close();
+});
+
+test("Milestone 4 schedules only approved platform versions and keeps one active job per version", async () => {
+  const f = fixture(); await f.start();
+  const contentId = f.item("Approved", "Creative");
+  const variant = f.sqlite.prepare(`INSERT INTO content_platform_variants
+    (workspace_id, content_id, platform, title, caption, planned_publish_at, status)
+    VALUES ('main', ?, 'Instagram', 'Approved Instagram', 'Ready caption', '2026-10-01T09:00', 'Approved')`).run(contentId);
+  const variantId = Number(variant.lastInsertRowid);
+  const denied = await f.call("Viewer", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
+  assert.equal(denied.status, 403);
+  const scheduled = await f.call("Social Media", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
+  assert.equal(scheduled.status, 201);
+  assert.equal(scheduled.data.job.status, "scheduled");
+  assert.equal(scheduled.data.job.platform, "Instagram");
+  assert.equal((f.sqlite.prepare("SELECT status FROM content_items WHERE id = ?").get(contentId) as any).status, "Scheduled");
+  assert.equal((await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-02T02:00:00.000Z" })).status, 409);
+  const queue = await f.call("Viewer", "GET", "publishing/jobs");
+  assert.equal(queue.status, 200);
+  assert.equal(queue.data.jobs.length, 1);
+  assert.equal(queue.data.counts.scheduled, 1);
+  assert.equal((await f.call("Owner", "DELETE", `content/${contentId}`, { version: 2 })).status, 409);
+  f.sqlite.close();
+});
+
+test("Milestone 4 safely blocks jobs without connectors, records logs, and supports retry and cancellation", async () => {
+  const f = fixture(); await f.start();
+  const contentId = f.item("Approved", "Creative");
+  const variantId = Number(f.sqlite.prepare(`INSERT INTO content_platform_variants
+    (workspace_id, content_id, platform, title, caption, status)
+    VALUES ('main', ?, 'LinkedIn', 'Queue test', 'Ready', 'Approved')`).run(contentId).lastInsertRowid);
+  const scheduled = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-09-01T02:00:00.000Z" });
+  const jobId = scheduled.data.job.id;
+  const run = await f.call("Social Media", "POST", "publishing/run", {});
+  assert.equal(run.status, 200);
+  assert.equal(run.data.processed, 1);
+  const blocked = await f.call("Owner", "GET", "publishing/jobs?status=blocked");
+  assert.equal(blocked.data.jobs[0].lastErrorCode, "CONNECTOR_NOT_CONFIGURED");
+  const logs = await f.call("Viewer", "GET", "publishing/logs");
+  assert.equal(logs.data.logs.length, 1);
+  assert.deepEqual([logs.data.logs[0].platform, logs.data.logs[0].attemptNumber, logs.data.logs[0].status], ["LinkedIn", 1, "blocked"]);
+  assert.equal((await f.call("Social Media", "POST", `publishing/jobs/${jobId}/retry`, {})).data.job.status, "queued");
+  assert.equal((await f.call("Owner", "POST", `publishing/jobs/${jobId}/cancel`, {})).data.job.status, "cancelled");
+  assert.ok((f.sqlite.prepare("SELECT COUNT(*) n FROM activity_history WHERE action IN ('publish_scheduled','publish_blocked','publish_retried','publish_cancelled')").get() as any).n >= 4);
+  f.sqlite.close();
+});
+
+test("publishing worker retries temporary errors and preserves a successful external result", async () => {
+  const f = fixture(); await f.start();
+  const contentId = f.item("Approved", "Creative");
+  const variantId = Number(f.sqlite.prepare(`INSERT INTO content_platform_variants
+    (workspace_id, content_id, platform, title, caption, status)
+    VALUES ('main', ?, 'Instagram', 'Retry test', 'Ready', 'Approved')`).run(contentId).lastInsertRowid);
+  const scheduled = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-09-01T02:00:00.000Z" });
+  const actor = (await f.call("Owner", "GET", "workspace")).data.actor;
+  let calls = 0;
+  const connector = { publish: async () => ++calls === 1
+    ? { ok: false as const, retryable: true, errorCode: "TEMPORARY_NETWORK", errorMessage: "Try again." }
+    : { ok: true as const, externalPostId: "ig-123", externalPostUrl: "https://example.test/ig-123" } };
+  const first = await processDuePublishJobs(f.db, actor, { Instagram: connector }, new Date("2026-09-27T00:00:00.000Z"));
+  assert.equal(first[0].status, "retrying");
+  const retrying = f.sqlite.prepare("SELECT status, attempt_count, next_attempt_at FROM publish_jobs WHERE id = ?").get(scheduled.data.job.id) as any;
+  assert.equal(retrying.status, "retrying");
+  assert.equal(retrying.attempt_count, 1);
+  const second = await processDuePublishJobs(f.db, actor, { Instagram: connector }, new Date("2026-09-27T00:06:00.000Z"));
+  assert.equal(second[0].status, "published");
+  const published = f.sqlite.prepare("SELECT status, attempt_count, external_post_id, external_post_url FROM publish_jobs WHERE id = ?").get(scheduled.data.job.id) as any;
+  assert.deepEqual([published.status, published.attempt_count, published.external_post_id], ["published", 2, "ig-123"]);
+  assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM publish_logs WHERE publish_job_id = ?").get(scheduled.data.job.id) as any).n, 2);
   f.sqlite.close();
 });

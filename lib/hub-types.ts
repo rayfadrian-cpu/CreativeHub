@@ -6,6 +6,7 @@ export const variantPlatforms = ["Instagram", "TikTok", "Facebook", "LinkedIn", 
 export const assetUsages = ["Main Asset", "Cover", "Thumbnail", "Supporting Asset", "Reference"] as const;
 export const campaignStatuses = ["Draft", "Active", "Paused", "Completed", "Archived"] as const;
 export const contentFormats = ["Post", "Carousel", "Story", "Reel", "Video", "Article", "Other"] as const;
+export const publishJobStatuses = ["scheduled", "queued", "processing", "retrying", "blocked", "failed", "published", "cancelled"] as const;
 
 export type Role = typeof roles[number];
 export type Status = typeof statuses[number];
@@ -68,6 +69,21 @@ export type StatusHistory = {
   id: number; contentId: number; fromStatus: Status; toStatus: Status;
   actorMemberId: number | null; actorName: string; note: string; createdAt: string;
 };
+export type PublishJobStatus = typeof publishJobStatuses[number];
+export type PublishJob = {
+  id: number; workspaceId: string; contentId: number; contentTitle: string; variantId: number;
+  variantTitle: string; platform: typeof variantPlatforms[number]; accountLabel: string;
+  scheduledAt: string; status: PublishJobStatus; attemptCount: number; maxAttempts: number;
+  nextAttemptAt: string; lastErrorCode: string; lastErrorMessage: string;
+  createdByMemberId: number | null; createdByName: string; createdAt: string; updatedAt: string;
+  completedAt: string; externalPostId: string; externalPostUrl: string;
+};
+export type PublishLog = {
+  id: number; publishJobId: number; contentId: number; contentTitle: string; variantId: number;
+  platform: string; accountLabel: string; attemptNumber: number; requestAt: string; responseAt: string;
+  status: string; externalPostId: string; externalPostUrl: string; errorCode: string;
+  errorMessage: string; createdAt: string;
+};
 export type WorkspaceData = {
   actor: Actor; workspace: Workspace; members: Member[]; brands: Brand[]; pillars: Pillar[];
   campaigns: Campaign[]; items: ContentItem[];
@@ -79,6 +95,7 @@ export const strategists = (role: Role) => managers(role) || role === "Content S
 export const canCreate = (role: Role) => strategists(role) || role === "Creative";
 export const canDelete = (role: Role) => managers(role);
 export const canUploadMedia = (role: Role) => !["Approver", "Viewer"].includes(role);
+export const canManagePublishing = (role: Role) => managers(role) || role === "Social Media";
 export const canManageLibraryAsset = (actor: Actor, asset?: Pick<MediaAsset, "uploaderMemberId">) => managers(actor.role) || actor.role === "Designer" && (!asset || asset.uploaderMemberId === actor.id);
 export const canSee = (actor: Actor, item: ContentItem) => actor.role !== "Designer" || item.assigneeId === actor.id;
 export const canComment = (actor: Actor, item: ContentItem) => canSee(actor, item) && actor.role !== "Viewer";
