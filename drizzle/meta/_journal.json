@@ -43,6 +43,13 @@
       "when": 1790314936901,
       "tag": "0005_mighty_frog_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1790487820651,
+      "tag": "0006_brave_zaladane",
+      "breakpoints": true
     }
   ]
 }

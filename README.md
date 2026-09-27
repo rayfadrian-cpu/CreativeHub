@@ -1,8 +1,8 @@
 # Creative Hub
 
-Creative Hub is a private content-management workspace for planning social media content. Milestones 1–3 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, team discussions, approval decisions, and Activity History.
+Creative Hub is a private content-management workspace for planning social media content. Milestones 1–4 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, team discussions, approval decisions, Activity History, and publishing infrastructure.
 
-Creative Hub does **not** publish to social media yet. The Scheduled status records the team's plan only.
+Creative Hub does **not** publish to social media yet. Milestone 4 safely stores scheduled jobs, retry state, failures, and attempt logs. Jobs pause at **Needs connection** until a real social account connector is added in Milestone 5.
 
 ## What you need
 
@@ -72,6 +72,8 @@ Migration `0003_milestone_two.sql` is also additive. It adds Media Library metad
 
 Migrations `0004_certain_living_mummy.sql` and `0005_mighty_frog_thor.sql` are additive Milestone 3 migrations. They add discussions, approval records, workflow status history, and a database rule that permits only one pending review per Content item. The version-4 backfill creates safe baseline records for existing Review, Approved, and Scheduled content. See `docs/milestone-3-migration.md` for deployment and recovery details.
 
+Migration `0006_brave_zaladane.sql` is the additive Milestone 4 migration. It adds publishing jobs and immutable attempt logs without changing existing Content, approval, platform-version, or Media Library records. See `docs/milestone-4-migration.md` for deployment and recovery details.
+
 ## Media Library limits
 
 - Images and documents: up to 25 MB each.
@@ -113,6 +115,9 @@ The test suite covers:
 - review submission, approval, revision, and rejection notes;
 - approval-gated scheduling and approval queue visibility;
 - workflow status history and collaboration activity records.
+- approval-gated publishing jobs and duplicate-job prevention;
+- queue cancellation, rescheduling, manual retry, and role permissions;
+- temporary-error retry backoff, permanent failure handling, connector blocking, and publishing logs.
 
 ## Production deployment
 
@@ -143,11 +148,11 @@ If a deployment fails after a migration is applied, do not edit or replay the ap
 
 ## Current scope
 
-Milestone 3 ends at collaboration, approval, and activity history. The following are intentionally not included yet:
+Milestone 4 ends at the publishing queue, worker-ready processing, retries, and logs. The following are intentionally not included yet:
 
 - @mentions and notifications
 - Social media account connections
-- Publishing queue and automatic publishing
-- Publishing logs
+- Real platform connectors and automatic external publishing
+- A provider-backed recurring worker trigger (the due-job processor is currently started from the Publishing screen)
 - Analytics
 - AI Studio

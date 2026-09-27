@@ -21,6 +21,7 @@ import {
 import { HubError } from "./hub-error.ts";
 import { handleMilestoneTwo } from "./milestone-two.ts";
 import { handleMilestoneThree, hasApprovedReview, recordEmbeddedStatusChange } from "./milestone-three.ts";
+import { handleMilestoneFour } from "./milestone-four.ts";
 
 type Identity = { userId: string; email: string; displayName: string };
 type Context = { db: D1Database; bucket?: R2Bucket; identity: Identity | null; ownerEmail: string };
@@ -270,8 +271,8 @@ async function ensureWorkspaceModel(db: D1Database, actor: Actor) {
 
   currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
     .bind(actor.workspaceId).first<{ modelVersion: number }>();
-  if ((currentVersion?.modelVersion ?? 0) >= 4) return;
-  await db.prepare(`INSERT INTO content_status_history
+  if ((currentVersion?.modelVersion ?? 0) < 4) {
+    await db.prepare(`INSERT INTO content_status_history
     (workspace_id, content_id, from_status, to_status, actor_member_id, actor_name, note)
     SELECT workspace_id, id, status, status, ?, ?, 'Milestone 3 history baseline.' FROM content_items c
     WHERE workspace_id = ? AND NOT EXISTS (SELECT 1 FROM content_status_history h WHERE h.content_id = c.id)`)
@@ -288,10 +289,19 @@ async function ensureWorkspaceModel(db: D1Database, actor: Actor) {
     FROM content_items c WHERE workspace_id = ? AND status IN ('Review', 'Approved', 'Scheduled')
       AND NOT EXISTS (SELECT 1 FROM approvals a WHERE a.content_id = c.id)`)
     .bind(actor.id, actor.id, actor.workspaceId).run();
-  await db.prepare("UPDATE workspaces SET model_version = 4, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    await db.prepare("UPDATE workspaces SET model_version = 4, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(actor.workspaceId).run();
+    await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
+      "Milestone 3 collaboration, approval, and status history records were prepared.", { modelVersion: 4 });
+  }
+
+  currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
+    .bind(actor.workspaceId).first<{ modelVersion: number }>();
+  if ((currentVersion?.modelVersion ?? 0) >= 5) return;
+  await db.prepare("UPDATE workspaces SET model_version = 5, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(actor.workspaceId).run();
   await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
-    "Milestone 3 collaboration, approval, and status history records were prepared.", { modelVersion: 4 });
+    "Milestone 4 publishing queue and log records are ready.", { modelVersion: 5 });
 }
 
 async function authenticate(ctx: Context): Promise<Actor> {
@@ -460,6 +470,8 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
 
     const milestoneThree = await handleMilestoneThree(request, path, { db, actor });
     if (milestoneThree) return milestoneThree;
+    const milestoneFour = await handleMilestoneFour(request, path, { db, actor });
+    if (milestoneFour) return milestoneFour;
     const milestoneTwo = await handleMilestoneTwo(request, path, { db, bucket: ctx.bucket, actor });
     if (milestoneTwo) return milestoneTwo;
 
@@ -527,6 +539,9 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
         const item = await getItem(db, actor, idOf(key));
         if (method === "DELETE") {
           if (!canDelete(actor.role)) deny();
+          if (await db.prepare("SELECT id FROM publish_jobs WHERE workspace_id = ? AND content_id = ? LIMIT 1").bind(scope, item.id).first()) {
+            throw new HubError("This content has publishing history and cannot be permanently deleted. Cancel active jobs and keep the record for audit history.", 409);
+          }
           const input = await body(request);
           ensureVersion(input, item);
           const result = await db.prepare("DELETE FROM content_items WHERE workspace_id = ? AND id = ? AND version = ?")
