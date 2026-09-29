@@ -180,6 +180,18 @@ h2 { font-size:1rem; color:#25334b; font-weight:600; letter-spacing:-.015em; }
 /* Milestone 4 · publishing infrastructure */
 .publishing-view { display:grid; gap:22px; }
 .publishing-notice { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:18px 20px; border:1px solid #cfe0f7; background:#f5f9ff; border-radius:14px; }
+.instagram-connection { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:16px; padding:18px 20px; border:1px solid var(--border); background:#fff; border-radius:14px; }
+.instagram-connection.is-connected { border-color:#b8dcc7; background:linear-gradient(135deg,#fff 0%,#f4fbf7 100%); }
+.instagram-mark { display:grid; place-items:center; width:44px; height:44px; color:#fff; background:linear-gradient(135deg,#6f3dcc,#d83285 58%,#f49b3d); border-radius:13px; box-shadow:0 7px 18px rgba(160,50,120,.18); }
+.instagram-mark svg { width:22px; height:22px; }
+.instagram-copy { min-width:0; display:grid; gap:4px; }
+.instagram-heading { display:flex; align-items:center; flex-wrap:wrap; gap:9px; }
+.instagram-heading > strong { color:#172033; font-size:15px; }
+.instagram-heading > span { display:inline-flex; align-items:center; gap:4px; padding:3px 7px; color:#1f7045; background:#e9f7ef; border-radius:999px; font-size:11px; font-weight:700; }
+.instagram-heading > span svg { width:13px; height:13px; }
+.instagram-copy p { margin:0; color:#39475a; font-size:13px; }
+.instagram-copy small { color:#6b788b; font-size:12px; line-height:1.45; }
+.instagram-loading { color:#68758a; font-size:13px; }
 .publishing-notice > div { display:flex; align-items:flex-start; gap:13px; color:#245ca8; }
 .publishing-notice svg { flex:0 0 auto; margin-top:2px; }
 .publishing-notice span { display:grid; gap:4px; }
@@ -217,6 +229,8 @@ h2 { font-size:1rem; color:#25334b; font-weight:600; letter-spacing:-.015em; }
   .publishing-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .publishing-notice { align-items:stretch; flex-direction:column; }
   .publishing-notice > button { align-self:flex-start; }
+  .instagram-connection { grid-template-columns:auto 1fr; }
+  .instagram-connection > button { grid-column:1 / -1; justify-self:start; }
 }
 @media (max-width:560px) {
   .publishing-metrics { grid-template-columns:1fr; }

@@ -1,8 +1,8 @@
 # Creative Hub
 
-Creative Hub is a private content-management workspace for planning social media content. Milestones 1–4 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, team discussions, approval decisions, Activity History, and publishing infrastructure.
+Creative Hub is a private content-management workspace for planning social media content. Milestones 1–5 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, team discussions, approval decisions, Activity History, publishing infrastructure, and the first official Instagram connector.
 
-Creative Hub does **not** publish to social media yet. Milestone 4 safely stores scheduled jobs, retry state, failures, and attempt logs. Jobs pause at **Needs connection** until a real social account connector is added in Milestone 5.
+Milestone 5 can connect one Instagram Business or Creator account and publish approved single-image posts or Reels. Other social platforms and multi-asset carousel publishing remain outside this milestone.
 
 ## What you need
 
@@ -37,6 +37,10 @@ Never commit `.env.local`, `.dev.vars`, database exports, authentication cookies
 | Variable | Purpose |
 | --- | --- |
 | `WORKSPACE_OWNER_EMAIL` | The email allowed to create or recover the first Owner membership. |
+| `INSTAGRAM_APP_ID` | Meta App identifier for Instagram Login. Store as a production secret. |
+| `INSTAGRAM_APP_SECRET` | Meta App secret used only by the server. Store as a production secret. |
+| `INSTAGRAM_API_VERSION` | Graph API version, currently `v25.0`. |
+| `SOCIAL_TOKEN_ENCRYPTION_KEY` | Base64-encoded 32-byte key used to encrypt access tokens at rest. Store as a production secret. |
 
 Use `.env.local` for local development. Production values are managed in Sites settings and must not be written into source files.
 
@@ -73,6 +77,8 @@ Migration `0003_milestone_two.sql` is also additive. It adds Media Library metad
 Migrations `0004_certain_living_mummy.sql` and `0005_mighty_frog_thor.sql` are additive Milestone 3 migrations. They add discussions, approval records, workflow status history, and a database rule that permits only one pending review per Content item. The version-4 backfill creates safe baseline records for existing Review, Approved, and Scheduled content. See `docs/milestone-3-migration.md` for deployment and recovery details.
 
 Migration `0006_brave_zaladane.sql` is the additive Milestone 4 migration. It adds publishing jobs and immutable attempt logs without changing existing Content, approval, platform-version, or Media Library records. See `docs/milestone-4-migration.md` for deployment and recovery details.
+
+Migration `0007_sudden_tana_nile.sql` is the additive Milestone 5 migration. It adds encrypted social-account records, one-time OAuth state records, and optional account/container references on publishing jobs. See `docs/milestone-5-migration.md` for deployment and recovery details.
 
 ## Media Library limits
 
@@ -118,6 +124,7 @@ The test suite covers:
 - approval-gated publishing jobs and duplicate-job prevention;
 - queue cancellation, rescheduling, manual retry, and role permissions;
 - temporary-error retry backoff, permanent failure handling, connector blocking, and publishing logs.
+- encrypted social tokens, signed temporary media delivery, OAuth role protection, and hashed one-time OAuth state.
 
 ## Production deployment
 
@@ -148,11 +155,11 @@ If a deployment fails after a migration is applied, do not edit or replay the ap
 
 ## Current scope
 
-Milestone 4 ends at the publishing queue, worker-ready processing, retries, and logs. The following are intentionally not included yet:
+Milestone 5 ends with one official Instagram connection and publishing proof of concept. The following are intentionally not included yet:
 
 - @mentions and notifications
-- Social media account connections
-- Real platform connectors and automatic external publishing
+- TikTok, YouTube, LinkedIn, Facebook, and X connections
+- Instagram carousel and Story publishing
 - A provider-backed recurring worker trigger (the due-job processor is currently started from the Publishing screen)
 - Analytics
 - AI Studio

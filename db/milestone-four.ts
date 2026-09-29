@@ -4,7 +4,7 @@ import {
 } from "../lib/hub-types.ts";
 import { HubError } from "./hub-error.ts";
 
-type Context = { db: D1Database; actor: Actor };
+type Context = { db: D1Database; actor: Actor; connectors?: PublishingConnectors };
 type PublishPayload = {
   jobId: number; contentId: number; contentTitle: string; variantId: number; platform: string;
   title: string; caption: string; description: string; hashtags: string; cta: string;
@@ -17,7 +17,7 @@ export type PublishingConnectors = Partial<Record<string, PublishingConnector>>;
 
 const jobCols = `j.id, j.workspace_id AS workspaceId, j.content_id AS contentId, c.title AS contentTitle,
   j.variant_id AS variantId, COALESCE(NULLIF(v.title, ''), c.title) AS variantTitle, j.platform,
-  j.account_label AS accountLabel, j.scheduled_at AS scheduledAt, j.status, j.attempt_count AS attemptCount,
+  j.social_account_id AS socialAccountId, j.account_label AS accountLabel, j.scheduled_at AS scheduledAt, j.status, j.attempt_count AS attemptCount,
   j.max_attempts AS maxAttempts, j.next_attempt_at AS nextAttemptAt, j.last_error_code AS lastErrorCode,
   j.last_error_message AS lastErrorMessage, j.created_by_member_id AS createdByMemberId,
   COALESCE(m.name, 'Former member') AS createdByName, j.external_post_id AS externalPostId,
@@ -112,10 +112,15 @@ async function createJob(request: Request, ctx: Context) {
   const duplicate = await ctx.db.prepare(`SELECT id FROM publish_jobs WHERE workspace_id = ? AND variant_id = ?
     AND status IN ('scheduled', 'queued', 'processing', 'retrying', 'blocked')`).bind(ctx.actor.workspaceId, variant.variantId).first();
   if (duplicate) throw new HubError("This platform version already has an active publishing job.", 409);
+  const account = variant.platform === "Instagram" ? await ctx.db.prepare(`SELECT id, username, display_name AS displayName
+    FROM social_accounts WHERE workspace_id = ? AND platform = 'Instagram' AND status = 'connected'
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).bind(ctx.actor.workspaceId)
+    .first<{ id: number; username: string; displayName: string }>() : null;
+  const accountLabel = account ? account.username ? `@${account.username}` : account.displayName || "Instagram account" : "Not connected";
   const result = await ctx.db.prepare(`INSERT INTO publish_jobs
-    (workspace_id, content_id, variant_id, platform, account_label, scheduled_at, status, next_attempt_at, created_by_member_id)
-    VALUES (?, ?, ?, ?, 'Not connected', ?, 'scheduled', ?, ?)`)
-    .bind(ctx.actor.workspaceId, variant.id, variant.variantId, variant.platform, scheduledAt, scheduledAt, ctx.actor.id).run();
+    (workspace_id, content_id, variant_id, platform, social_account_id, account_label, scheduled_at, status, next_attempt_at, created_by_member_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'scheduled', ?, ?)`)
+    .bind(ctx.actor.workspaceId, variant.id, variant.variantId, variant.platform, account?.id ?? null, accountLabel, scheduledAt, scheduledAt, ctx.actor.id).run();
   const jobId = Number(result.meta.last_row_id);
   if (variant.status === "Approved") {
     await ctx.db.batch([
@@ -264,7 +269,7 @@ export async function handleMilestoneFour(request: Request, path: string[], ctx:
   if (collection === "logs" && method === "GET") return listLogs(request, ctx);
   if (collection === "run" && method === "POST") {
     if (!canManagePublishing(ctx.actor.role)) deny();
-    const outcomes = await processDuePublishJobs(ctx.db, ctx.actor);
+    const outcomes = await processDuePublishJobs(ctx.db, ctx.actor, ctx.connectors ?? {});
     return json({ processed: outcomes.length, outcomes });
   }
   if (collection === "jobs" && key && /^\d+$/.test(key) && action) {
