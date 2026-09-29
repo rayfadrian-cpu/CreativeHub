@@ -1,18 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Ban, CheckCircle2, Clock3, ExternalLink, ListRestart, Play, RefreshCw, Send, TimerReset } from "lucide-react";
+import { AlertTriangle, Ban, Camera, CheckCircle2, Clock3, ExternalLink, Link2, Link2Off, ListRestart, Play, RefreshCw, Send, ShieldCheck, TimerReset } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { canManagePublishing, type Actor, type ContentItem, type PlatformVariant, type PublishJob, type PublishJobStatus, type PublishLog } from "@/lib/hub-types";
+import { canManagePublishing, type Actor, type ContentItem, type PlatformVariant, type PublishJob, type PublishJobStatus, type PublishLog, type SocialAccount } from "@/lib/hub-types";
 import { api } from "./creative-hub";
 import { Confirm, EmptyState } from "./hub-views";
 
 type QueueResult = { jobs: PublishJob[]; counts: Record<string, number>; permissions: { manage: boolean; run: boolean } };
+type InstagramResult = { configured: boolean; account: SocialAccount | null; permissions: { manage: boolean }; redirectUri: string; capabilities: string[] };
 const waiting = new Set<PublishJobStatus>(["scheduled", "queued", "retrying"]);
 const statusLabel: Record<PublishJobStatus, string> = {
   scheduled: "Scheduled", queued: "Queued", processing: "Processing", retrying: "Retrying",
@@ -27,25 +28,27 @@ export function PublishStatusBadge({ status }: { status: PublishJobStatus }) {
 export function PublishingView({ open }: { open: (contentId: number) => void }) {
   const [queue, setQueue] = useState<QueueResult | null>(null);
   const [logs, setLogs] = useState<PublishLog[]>([]);
+  const [instagram, setInstagram] = useState<InstagramResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<"all" | PublishJobStatus>("all");
   const [cancel, setCancel] = useState<PublishJob | null>(null);
   const [reschedule, setReschedule] = useState<PublishJob | null>(null);
+  const [disconnectInstagram, setDisconnectInstagram] = useState(false);
   const load = async () => {
     setLoading(true);
     try {
-      const [jobs, history] = await Promise.all([
-        api<QueueResult>("publishing/jobs"), api<{ logs: PublishLog[] }>("publishing/logs?limit=150"),
+      const [jobs, history, connection] = await Promise.all([
+        api<QueueResult>("publishing/jobs"), api<{ logs: PublishLog[] }>("publishing/logs?limit=150"), api<InstagramResult>("integrations/instagram"),
       ]);
-      setQueue(jobs); setLogs(history.logs);
+      setQueue(jobs); setLogs(history.logs); setInstagram(connection);
     } catch (error) { toast.error((error as Error).message); }
     finally { setLoading(false); }
   };
   useEffect(() => {
     let active = true;
-    Promise.all([api<QueueResult>("publishing/jobs"), api<{ logs: PublishLog[] }>("publishing/logs?limit=150")])
-      .then(([jobs, history]) => { if (active) { setQueue(jobs); setLogs(history.logs); } })
+    Promise.all([api<QueueResult>("publishing/jobs"), api<{ logs: PublishLog[] }>("publishing/logs?limit=150"), api<InstagramResult>("integrations/instagram")])
+      .then(([jobs, history, connection]) => { if (active) { setQueue(jobs); setLogs(history.logs); setInstagram(connection); } })
       .catch(error => { if (active) toast.error((error as Error).message); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
@@ -67,9 +70,23 @@ export function PublishingView({ open }: { open: (contentId: number) => void }) 
     catch (error) { toast.error((error as Error).message); }
     finally { setBusy(false); setCancel(null); }
   };
+  const connect = async () => {
+    setBusy(true);
+    try {
+      const result = await api<{ authorizationUrl: string }>("integrations/instagram/connect", "POST", {});
+      window.location.assign(result.authorizationUrl);
+    } catch (error) { toast.error((error as Error).message); setBusy(false); }
+  };
+  const disconnect = async () => {
+    setBusy(true);
+    try { await api("integrations/instagram/disconnect", "POST", {}); await load(); toast.success("Instagram account disconnected and its stored token removed"); }
+    catch (error) { toast.error((error as Error).message); }
+    finally { setBusy(false); setDisconnectInstagram(false); }
+  };
 
   return <div className="publishing-view">
-    <div className="publishing-notice"><div><Send/><span><strong>Publishing infrastructure is ready</strong><small>Jobs, retries, and logs are active. Social accounts are connected in Milestone 5, so due jobs currently pause safely at “Needs connection” and nothing is posted externally.</small></span></div>{queue?.permissions.run && <Button disabled={busy} onClick={() => void run()}><Play/>{busy ? "Processing…" : "Process due jobs"}</Button>}</div>
+    <InstagramConnection integration={instagram} busy={busy} connect={connect} disconnect={() => setDisconnectInstagram(true)}/>
+    <div className="publishing-notice"><div><Send/><span><strong>Instagram publishing is available</strong><small>Approved single-image posts and Reels can publish through the connected professional account. Jobs, retries, and attempt logs remain visible here.</small></span></div>{queue?.permissions.run && <Button disabled={busy} onClick={() => void run()}><Play/>{busy ? "Processing…" : "Process due jobs"}</Button>}</div>
     <div className="publishing-metrics">
       <button onClick={() => setFilter("scheduled")}><Clock3/><span>Upcoming</span><strong>{count(["scheduled", "queued"])}</strong></button>
       <button onClick={() => setFilter("retrying")}><RefreshCw/><span>Retrying</span><strong>{count(["retrying", "processing"])}</strong></button>
@@ -86,8 +103,26 @@ export function PublishingView({ open }: { open: (contentId: number) => void }) 
       </TabsContent>
     </Tabs>
     <Confirm open={!!cancel} close={() => setCancel(null)} title="Cancel this publishing job?" description="The content and platform version stay intact. The cancelled job remains in the audit history." label="Cancel job" action={() => act(cancel!, "cancel")}/>
+    <Confirm open={disconnectInstagram} close={() => setDisconnectInstagram(false)} title="Disconnect Instagram?" description="Creative Hub will remove the stored access token. Existing content and publishing history will stay intact." label="Disconnect" action={disconnect}/>
     {reschedule && <RescheduleDialog job={reschedule} close={() => setReschedule(null)} saved={async () => { setReschedule(null); await load(); }}/>} 
   </div>;
+}
+
+function InstagramConnection({ integration, busy, connect, disconnect }: { integration: InstagramResult | null; busy: boolean; connect: () => Promise<void>; disconnect: () => void }) {
+  if (!integration) return <div className="instagram-connection instagram-loading">Loading Instagram connection…</div>;
+  const account = integration.account;
+  return <section className={`instagram-connection ${account ? "is-connected" : ""}`}>
+    <div className="instagram-mark"><Camera/></div>
+    <div className="instagram-copy">
+      <div className="instagram-heading"><strong>Instagram</strong>{account && <span><ShieldCheck/>Connected securely</span>}</div>
+      {account ? <><p><b>{account.username ? `@${account.username}` : account.displayName || "Professional account"}</b> · {account.accountType || "Professional"}</p><small>Ready for single-image posts and Reels. Access token expires {dateTime(account.tokenExpiresAt)} and is refreshed automatically.</small></>
+        : integration.configured ? <><p>Connect one Instagram Business or Creator account.</p><small>Creative Hub never exposes the access token in your browser.</small></>
+        : <><p>Meta App credentials still need to be added by the workspace owner.</p><small>After setup, this button will open Instagram’s official authorization screen.</small></>}
+    </div>
+    {integration.permissions.manage && (account
+      ? <Button variant="outline" disabled={busy} onClick={disconnect}><Link2Off/>Disconnect</Button>
+      : <Button disabled={busy || !integration.configured} onClick={() => void connect()}><Link2/>{integration.configured ? "Connect Instagram" : "Setup required"}</Button>)}
+  </section>;
 }
 
 function localValue(value: string) {
@@ -110,5 +145,5 @@ export function ScheduleVariantButton({ actor, item, variant, scheduled }: { act
 function ScheduleDialog({ item, variant, close, saved }: { item: ContentItem; variant: PlatformVariant; close: () => void; saved: () => Promise<void> }) {
   const seed = variant.plannedPublishAt ? localValue(variant.plannedPublishAt) : localValue(`${item.publishDate}T09:00:00`);
   const [value, setValue] = useState(seed); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
-  return <Dialog open onOpenChange={next => !next && !busy && close()}><DialogContent><form onSubmit={async event => { event.preventDefault(); setBusy(true); setError(""); try { await api("publishing/jobs", "POST", { variantId: variant.id, scheduledAt: new Date(value).toISOString() }); await saved(); close(); toast.success(`${variant.platform} added to the publishing queue`); } catch (issue) { setError((issue as Error).message); } finally { setBusy(false); } }}><DialogHeader><DialogTitle>Schedule {variant.platform}</DialogTitle><DialogDescription>This creates a publishing job for “{item.title}”. Until a social account is connected in Milestone 5, the job will pause safely instead of posting.</DialogDescription></DialogHeader><div className="dialog-field"><Label htmlFor={`schedule-${variant.id}`}>Publish date & time</Label><Input id={`schedule-${variant.id}`} type="datetime-local" required value={value} onChange={event => setValue(event.target.value)}/><p className="field-help">Platform: {variant.platform} · Account: not connected</p>{error && <p className="form-error">{error}</p>}</div><DialogFooter><Button type="button" variant="outline" onClick={close}>Cancel</Button><Button disabled={busy}>{busy ? "Scheduling…" : "Add to queue"}</Button></DialogFooter></form></DialogContent></Dialog>;
+  return <Dialog open onOpenChange={next => !next && !busy && close()}><DialogContent><form onSubmit={async event => { event.preventDefault(); setBusy(true); setError(""); try { await api("publishing/jobs", "POST", { variantId: variant.id, scheduledAt: new Date(value).toISOString() }); await saved(); close(); toast.success(`${variant.platform} added to the publishing queue`); } catch (issue) { setError((issue as Error).message); } finally { setBusy(false); } }}><DialogHeader><DialogTitle>Schedule {variant.platform}</DialogTitle><DialogDescription>This creates a publishing job for “{item.title}”. Instagram jobs use the connected professional account; unsupported platforms remain safely blocked.</DialogDescription></DialogHeader><div className="dialog-field"><Label htmlFor={`schedule-${variant.id}`}>Publish date & time</Label><Input id={`schedule-${variant.id}`} type="datetime-local" required value={value} onChange={event => setValue(event.target.value)}/><p className="field-help">Platform: {variant.platform}</p>{error && <p className="form-error">{error}</p>}</div><DialogFooter><Button type="button" variant="outline" onClick={close}>Cancel</Button><Button disabled={busy}>{busy ? "Scheduling…" : "Add to queue"}</Button></DialogFooter></form></DialogContent></Dialog>;
 }

@@ -22,9 +22,10 @@ import { HubError } from "./hub-error.ts";
 import { handleMilestoneTwo } from "./milestone-two.ts";
 import { handleMilestoneThree, hasApprovedReview, recordEmbeddedStatusChange } from "./milestone-three.ts";
 import { handleMilestoneFour } from "./milestone-four.ts";
+import { createPublishingConnectors, handleMilestoneFive, type InstagramConfig } from "./milestone-five.ts";
 
 type Identity = { userId: string; email: string; displayName: string };
-type Context = { db: D1Database; bucket?: R2Bucket; identity: Identity | null; ownerEmail: string };
+type Context = { db: D1Database; bucket?: R2Bucket; identity: Identity | null; ownerEmail: string; instagram?: InstagramConfig };
 type WorkspaceRow = { id: string; name: string; slug: string; timezone: string; modelVersion: number; ownerUserId: string; ownerEmail: string };
 type BrandRow = { id: number; name: string; description: string; slug: string; logo: string; timezone: string; archived: number };
 type CampaignRow = { id: number; brand_id: number; name: string; status: string; archived: number };
@@ -470,7 +471,12 @@ export async function handleHub(request: Request, path: string[], ctx: Context):
 
     const milestoneThree = await handleMilestoneThree(request, path, { db, actor });
     if (milestoneThree) return milestoneThree;
-    const milestoneFour = await handleMilestoneFour(request, path, { db, actor });
+    const instagram = ctx.instagram ?? { appId: "", appSecret: "", encryptionKey: "", apiVersion: "v25.0" };
+    const integrationContext = { db, bucket: ctx.bucket, actor, origin: new URL(request.url).origin, config: instagram };
+    const milestoneFive = await handleMilestoneFive(request, path, integrationContext);
+    if (milestoneFive) return milestoneFive;
+    const connectors = resource === "publishing" ? await createPublishingConnectors(integrationContext) : {};
+    const milestoneFour = await handleMilestoneFour(request, path, { db, actor, connectors });
     if (milestoneFour) return milestoneFour;
     const milestoneTwo = await handleMilestoneTwo(request, path, { db, bucket: ctx.bucket, actor });
     if (milestoneTwo) return milestoneTwo;

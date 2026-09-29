@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { handleHub } from "../db/hub-service.ts";
 import { processDuePublishJobs } from "../db/milestone-four.ts";
+import { decryptSocialToken, encryptSocialToken, signPublishingMedia, verifyPublishingMediaSignature, type InstagramConfig } from "../db/milestone-five.ts";
 import { roles, statuses, type Role } from "../lib/hub-types.ts";
 
 let fixtureSequence = 0;
@@ -53,13 +54,14 @@ function fixture() {
     },
   } as unknown as D1Database;
   const identity = (role: string) => ({ userId: `${fixtureId}-${role}-user`, email: role.replaceAll(" ", "").toLowerCase() + "@example.com", displayName: role + " Person" });
+  let instagram: InstagramConfig | undefined;
   async function call(role: string | null, method: string, path: string, payload?: any, headers: Record<string, string> = {}) {
     const request = new Request("https://creative.test/api/hub/" + path, {
       method,
       headers: { origin: "https://creative.test", ...headers },
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     });
-    const response = await handleHub(request, path.split("?")[0].split("/"), { db, bucket, identity: role ? identity(role) : null, ownerEmail: "owner@example.com" });
+    const response = await handleHub(request, path.split("?")[0].split("/"), { db, bucket, identity: role ? identity(role) : null, ownerEmail: "owner@example.com", instagram });
     return { status: response.status, data: await response.json() as any };
   }
   async function upload(role: string, fileName: string, mimeType: string, bytes: Uint8Array) {
@@ -70,14 +72,14 @@ function fixture() {
       },
       body: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
     });
-    const response = await handleHub(request, ["media", "upload"], { db, bucket, identity: identity(role), ownerEmail: "owner@example.com" });
+    const response = await handleHub(request, ["media", "upload"], { db, bucket, identity: identity(role), ownerEmail: "owner@example.com", instagram });
     return { status: response.status, data: await response.json() as any };
   }
   async function file(role: string, assetId: number) {
     const request = new Request(`https://creative.test/api/hub/media/${assetId}/file`, {
       headers: { origin: "https://creative.test" },
     });
-    return handleHub(request, ["media", String(assetId), "file"], { db, bucket, identity: identity(role), ownerEmail: "owner@example.com" });
+    return handleHub(request, ["media", String(assetId), "file"], { db, bucket, identity: identity(role), ownerEmail: "owner@example.com", instagram });
   }
   async function start() {
     assert.equal((await call("Owner", "GET", "workspace")).status, 200);
@@ -109,7 +111,8 @@ function fixture() {
     }
     return id;
   }
-  return { sqlite, db, objects, call, upload, file, start, memberId, brandId, pillarId, item };
+  return { sqlite, db, objects, call, upload, file, start, memberId, brandId, pillarId, item,
+    setInstagram(value: InstagramConfig) { instagram = value; } };
 }
 
 test("safe migration preserves every legacy content value and links stable IDs", async () => {
@@ -561,5 +564,41 @@ test("publishing worker retries temporary errors and preserves a successful exte
   const published = f.sqlite.prepare("SELECT status, attempt_count, external_post_id, external_post_url FROM publish_jobs WHERE id = ?").get(scheduled.data.job.id) as any;
   assert.deepEqual([published.status, published.attempt_count, published.external_post_id], ["published", 2, "ig-123"]);
   assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM publish_logs WHERE publish_job_id = ?").get(scheduled.data.job.id) as any).n, 2);
+  f.sqlite.close();
+});
+
+test("Milestone 5 encrypts social tokens and validates short-lived publishing media signatures", async () => {
+  const encryptionKey = Buffer.alloc(32, 7).toString("base64");
+  const encrypted = await encryptSocialToken("private-instagram-token", encryptionKey);
+  assert.notEqual(encrypted.ciphertext, "private-instagram-token");
+  assert.equal(await decryptSocialToken(encrypted.ciphertext, encrypted.iv, encryptionKey), "private-instagram-token");
+  const expires = Math.floor(Date.now() / 1000) + 120;
+  const signature = await signPublishingMedia("main", 9, expires, encryptionKey);
+  assert.equal(await verifyPublishingMediaSignature("main", 9, expires, signature, encryptionKey), true);
+  assert.equal(await verifyPublishingMediaSignature("main", 10, expires, signature, encryptionKey), false);
+  assert.equal(await verifyPublishingMediaSignature("main", 9, Math.floor(Date.now() / 1000) - 1, signature, encryptionKey), false);
+});
+
+test("Milestone 5 exposes safe Instagram setup state and protects OAuth connection by role and hashed state", async () => {
+  const f = fixture(); await f.start();
+  const missing = await f.call("Owner", "GET", "integrations/instagram");
+  assert.equal(missing.status, 200);
+  assert.equal(missing.data.configured, false);
+  assert.equal(missing.data.account, null);
+  assert.equal((await f.call("Owner", "POST", "integrations/instagram/connect", {})).status, 409);
+
+  f.setInstagram({ appId: "meta-app-123", appSecret: "server-only-secret", encryptionKey: Buffer.alloc(32, 3).toString("base64"), apiVersion: "v25.0" });
+  assert.equal((await f.call("Social Media", "POST", "integrations/instagram/connect", {})).status, 403);
+  const connected = await f.call("Owner", "POST", "integrations/instagram/connect", {});
+  assert.equal(connected.status, 200);
+  const authorization = new URL(connected.data.authorizationUrl);
+  assert.equal(authorization.hostname, "www.instagram.com");
+  assert.equal(authorization.searchParams.get("client_id"), "meta-app-123");
+  assert.match(authorization.searchParams.get("scope") ?? "", /instagram_business_content_publish/);
+  const rawState = authorization.searchParams.get("state") ?? "";
+  const stored = f.sqlite.prepare("SELECT state_hash, expires_at FROM social_oauth_states").get() as any;
+  assert.ok(rawState.length > 20);
+  assert.notEqual(stored.state_hash, rawState);
+  assert.ok(new Date(stored.expires_at).getTime() > Date.now());
   f.sqlite.close();
 });

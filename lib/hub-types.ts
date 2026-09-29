@@ -72,7 +72,7 @@ export type StatusHistory = {
 export type PublishJobStatus = typeof publishJobStatuses[number];
 export type PublishJob = {
   id: number; workspaceId: string; contentId: number; contentTitle: string; variantId: number;
-  variantTitle: string; platform: typeof variantPlatforms[number]; accountLabel: string;
+  variantTitle: string; platform: typeof variantPlatforms[number]; socialAccountId: number | null; accountLabel: string;
   scheduledAt: string; status: PublishJobStatus; attemptCount: number; maxAttempts: number;
   nextAttemptAt: string; lastErrorCode: string; lastErrorMessage: string;
   createdByMemberId: number | null; createdByName: string; createdAt: string; updatedAt: string;
@@ -83,6 +83,12 @@ export type PublishLog = {
   platform: string; accountLabel: string; attemptNumber: number; requestAt: string; responseAt: string;
   status: string; externalPostId: string; externalPostUrl: string; errorCode: string;
   errorMessage: string; createdAt: string;
+};
+export type SocialAccount = {
+  id: number; platform: "Instagram"; username: string; displayName: string; accountType: string;
+  profilePictureUrl: string; tokenExpiresAt: string; scopes: string; status: string;
+  lastVerifiedAt: string; lastErrorCode: string; lastErrorMessage: string;
+  createdAt: string; updatedAt: string;
 };
 export type WorkspaceData = {
   actor: Actor; workspace: Workspace; members: Member[]; brands: Brand[]; pillars: Pillar[];
