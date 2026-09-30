@@ -55,13 +55,16 @@ function fixture() {
   } as unknown as D1Database;
   const identity = (role: string) => ({ userId: `${fixtureId}-${role}-user`, email: role.replaceAll(" ", "").toLowerCase() + "@example.com", displayName: role + " Person" });
   let instagram: InstagramConfig | undefined;
-  async function call(role: string | null, method: string, path: string, payload?: any, headers: Record<string, string> = {}) {
+  async function raw(role: string | null, method: string, path: string, payload?: any, headers: Record<string, string> = {}) {
     const request = new Request("https://creative.test/api/hub/" + path, {
       method,
       headers: { origin: "https://creative.test", ...headers },
       ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     });
-    const response = await handleHub(request, path.split("?")[0].split("/"), { db, bucket, identity: role ? identity(role) : null, ownerEmail: "owner@example.com", instagram });
+    return handleHub(request, path.split("?")[0].split("/"), { db, bucket, identity: role ? identity(role) : null, ownerEmail: "owner@example.com", instagram });
+  }
+  async function call(role: string | null, method: string, path: string, payload?: any, headers: Record<string, string> = {}) {
+    const response = await raw(role, method, path, payload, headers);
     return { status: response.status, data: await response.json() as any };
   }
   async function upload(role: string, fileName: string, mimeType: string, bytes: Uint8Array) {
@@ -111,7 +114,7 @@ function fixture() {
     }
     return id;
   }
-  return { sqlite, db, objects, call, upload, file, start, memberId, brandId, pillarId, item,
+  return { sqlite, db, objects, raw, call, upload, file, start, memberId, brandId, pillarId, item,
     setInstagram(value: InstagramConfig) { instagram = value; } };
 }
 
@@ -600,5 +603,11 @@ test("Milestone 5 exposes safe Instagram setup state and protects OAuth connecti
   assert.ok(rawState.length > 20);
   assert.notEqual(stored.state_hash, rawState);
   assert.ok(new Date(stored.expires_at).getTime() > Date.now());
+  const redirect = await f.raw("Owner", "GET", "integrations/instagram/connect");
+  assert.equal(redirect.status, 303);
+  const redirectUrl = new URL(redirect.headers.get("location") ?? "");
+  assert.equal(redirectUrl.hostname, "www.instagram.com");
+  assert.equal(redirectUrl.searchParams.get("client_id"), "meta-app-123");
+  assert.ok((redirectUrl.searchParams.get("state") ?? "").length > 20);
   f.sqlite.close();
 });

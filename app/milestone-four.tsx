@@ -72,10 +72,9 @@ export function PublishingView({ open }: { open: (contentId: number) => void }) 
   };
   const connect = async () => {
     setBusy(true);
-    try {
-      const result = await api<{ authorizationUrl: string }>("integrations/instagram/connect", "POST", {});
-      window.location.assign(result.authorizationUrl);
-    } catch (error) { toast.error((error as Error).message); setBusy(false); }
+    // A full document request lets the server create OAuth state and redirect to Instagram.
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.href = "/api/hub/integrations/instagram/connect";
   };
   const disconnect = async () => {
     setBusy(true);

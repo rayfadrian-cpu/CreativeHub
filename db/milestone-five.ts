@@ -162,7 +162,7 @@ function redirectBack(origin: string, result: "connected" | "cancelled" | "error
   return Response.redirect(`${origin}/?instagram=${result}#publishing`, 303);
 }
 
-async function beginConnection(ctx: Context) {
+async function beginConnection(ctx: Context, redirect = false) {
   if (!managers(ctx.actor.role)) deny();
   if (!configured(ctx.config)) throw new HubError("Instagram setup is not ready yet. Add the Meta App credentials in the hosting settings first.", 409);
   const state = base64Url(crypto.getRandomValues(new Uint8Array(32)));
@@ -180,7 +180,10 @@ async function beginConnection(ctx: Context) {
   authorization.searchParams.set("response_type", "code");
   authorization.searchParams.set("scope", "instagram_business_basic,instagram_business_content_publish");
   authorization.searchParams.set("state", state);
-  return Response.json({ authorizationUrl: authorization.toString() }, { headers: noStoreHeaders });
+  const authorizationUrl = authorization.toString();
+  return redirect
+    ? Response.redirect(authorizationUrl, 303)
+    : Response.json({ authorizationUrl }, { headers: noStoreHeaders });
 }
 
 async function finishConnection(request: Request, ctx: Context) {
@@ -275,6 +278,7 @@ export async function handleMilestoneFive(request: Request, path: string[], ctx:
       capabilities: ["Single image", "Reel / video"],
     }, { headers: noStoreHeaders });
   }
+  if (action === "connect" && request.method === "GET") return beginConnection(ctx, true);
   if (action === "connect" && request.method === "POST") return beginConnection(ctx);
   if (action === "callback" && request.method === "GET") return finishConnection(request, ctx);
   if (action === "disconnect" && request.method === "POST") return disconnect(ctx);
