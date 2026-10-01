@@ -47,6 +47,20 @@ export function PriorityBadge({ priority }: { priority: ContentItem["priority"] 
   return <span className={"priority priority-" + priority.toLowerCase()}>{priority === "Urgent" ? "!! " : priority === "High" ? "↑ " : ""}{priority}</span>;
 }
 
+function ReadinessBadge({ item }: { item: ContentItem }) {
+  let label = "In progress";
+  let state = "progress";
+  if (item.publishingStatus === "published") { label = "Published"; state = "ready"; }
+  else if (["blocked", "failed"].includes(item.publishingStatus || "")) { label = "Needs attention"; state = "missing"; }
+  else if (item.publishingStatus) { label = item.publishingStatus === "scheduled" ? "Scheduled" : "In publishing queue"; state = "ready"; }
+  else if (!item.variantCount) { label = "Missing platform version"; state = "missing"; }
+  else if (!item.mediaCount) { label = "Missing media"; state = "missing"; }
+  else if (!item.caption.trim() && !item.variantCaptionCount) { label = "Missing caption"; state = "missing"; }
+  else if (item.status === "Approved") { label = "Ready to schedule"; state = "ready"; }
+  else if (item.status === "Review") { label = "Waiting for approval"; state = "progress"; }
+  return <span className={`readiness-badge readiness-${state}`}>{label}</span>;
+}
+
 export function Confirm({ open, close, title, description, label, action }: { open: boolean; close: () => void; title: string; description: string; label: string; action: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -103,7 +117,7 @@ export function ContentEditor({ item, data, close, save }: { item: ContentItem |
       await save(payload);
     } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
-  return <Dialog open onOpenChange={value => !value && !busy && close()}><DialogContent className="content-modal"><form onSubmit={submit}><DialogHeader><DialogTitle>{item ? readonly ? "Content details" : "Edit content" : "New content"}</DialogTitle><DialogDescription>{readonly ? "You have read-only access to this item." : "Plan the master content record. Publishing remains manual."}</DialogDescription></DialogHeader>
+  return <Dialog open onOpenChange={value => !value && !busy && close()}><DialogContent className="content-modal"><form onSubmit={submit}><DialogHeader><DialogTitle>{item ? readonly ? "Content details" : "Edit content" : "New content"}</DialogTitle><DialogDescription>{readonly ? "You have read-only access to this item." : "Plan the master content record. Use Create Post when you also need platform copy, media, and an account destination."}</DialogDescription></DialogHeader>
     <div className="modal-scroll"><div className="form-grid">
       <Field label="Content title" id="content-title" wide><Input id="content-title" maxLength={200} required disabled={!enabled("title")} value={form.title} onChange={e => update("title", e.target.value)}/></Field>
       <Field label="Brand" id="content-brand"><Choice id="content-brand" label="Brand" value={form.brandId == null ? "" : String(form.brandId)} options={data.brands.filter(x => !x.archived || x.id === item?.brandId).map(x => ({ value: String(x.id), label: x.name }))} disabled={!enabled("brandId")} onChange={v => setForm(current => ({ ...current, brandId: Number(v), campaignId: null, pillarId: null }))}/></Field>
@@ -130,7 +144,7 @@ export function ContentEditor({ item, data, close, save }: { item: ContentItem |
 
 export function ContentTable({ items, actor, open, remove, compact = false }: { items: ContentItem[]; actor: Actor; open: (item: ContentItem) => void; remove?: (item: ContentItem) => void; compact?: boolean }) {
   if (!items.length) return <EmptyState title="No content to show" description="Try another filter, or add a new content item."/>;
-  return <div className={compact ? "" : "panel table-scroll"}><Table><TableHeader><TableRow><TableHead>Content title</TableHead><TableHead>Publish date</TableHead><TableHead>PIC</TableHead><TableHead>Status</TableHead>{!compact && <><TableHead>Priority</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></>}</TableRow></TableHeader><TableBody>{items.map(item => <TableRow key={item.id}><TableCell className="title-cell"><button onClick={() => open(item)}>{item.title}</button><span>{item.brand} · {item.platform}{item.pillar ? " · " + item.pillar : ""}</span></TableCell><TableCell className="nowrap">{dateLabel(item.publishDate)}</TableCell><TableCell>{item.pic || "Unassigned"}</TableCell><TableCell><StatusBadge status={item.status}/></TableCell>{!compact && <><TableCell><PriorityBadge priority={item.priority}/></TableCell><TableCell><div className="table-actions"><Button size="icon" variant="ghost" aria-label={"Open " + item.title} onClick={() => open(item)}><Pencil size={15}/></Button>{canDelete(actor.role) && remove && <Button size="icon" variant="ghost" aria-label={"Delete " + item.title} onClick={() => remove(item)}><Trash2 size={15}/></Button>}</div></TableCell></>}</TableRow>)}</TableBody></Table></div>;
+  return <div className={compact ? "" : "panel table-scroll"}><Table><TableHeader><TableRow><TableHead>Content title</TableHead><TableHead>Publish date</TableHead><TableHead>PIC</TableHead><TableHead>Status</TableHead>{!compact && <><TableHead>Readiness</TableHead><TableHead>Priority</TableHead><TableHead><span className="sr-only">Actions</span></TableHead></>}</TableRow></TableHeader><TableBody>{items.map(item => <TableRow key={item.id}><TableCell className="title-cell"><button onClick={() => open(item)}>{item.title}</button><span>{item.brand} · {item.platform}{item.pillar ? " · " + item.pillar : ""}</span></TableCell><TableCell className="nowrap">{dateLabel(item.publishDate)}</TableCell><TableCell>{item.pic || "Unassigned"}</TableCell><TableCell><StatusBadge status={item.status}/></TableCell>{!compact && <><TableCell><ReadinessBadge item={item}/></TableCell><TableCell><PriorityBadge priority={item.priority}/></TableCell><TableCell><div className="table-actions"><Button size="icon" variant="ghost" aria-label={"Open " + item.title} onClick={() => open(item)}><Pencil size={15}/></Button>{canDelete(actor.role) && remove && <Button size="icon" variant="ghost" aria-label={"Delete " + item.title} onClick={() => remove(item)}><Trash2 size={15}/></Button>}</div></TableCell></>}</TableRow>)}</TableBody></Table></div>;
 }
 
 export function AllContentView({ data, open, remove, refreshKey }: { data: WorkspaceData; open: (item: ContentItem) => void; remove: (item: ContentItem) => void; refreshKey: string }) {

@@ -35,6 +35,7 @@ export type ContentItem = {
   format: typeof contentFormats[number]; priority: typeof priorities[number]; pic: string; assigneeId: number | null;
   creatorMemberId: number | null; creatorName: string; deadline: string; publishDate: string; platform: string;
   status: Status; caption: string; copyHook: string; copyCta: string; copyNotes: string; notes: string; version: number; reviewDecision: string;
+  variantCount?: number; variantCaptionCount?: number; mediaCount?: number; publishingStatus?: PublishJobStatus | ""; publishingAccount?: string;
   createdAt: string; updatedAt: string;
 };
 export type MediaAsset = {

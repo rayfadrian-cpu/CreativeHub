@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Ban, Camera, CheckCircle2, Clock3, ExternalLink, Link2, Link2Off, ListRestart, Play, RefreshCw, Send, ShieldCheck, TimerReset } from "lucide-react";
+import { AlertTriangle, Ban, Camera, CheckCircle2, Clock3, ExternalLink, Link2, Link2Off, ListRestart, Play, Plus, RefreshCw, Send, ShieldCheck, TimerReset } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -25,7 +25,7 @@ export function PublishStatusBadge({ status }: { status: PublishJobStatus }) {
   return <span className={`publish-status publish-${status}`}>{statusLabel[status]}</span>;
 }
 
-export function PublishingView({ open }: { open: (contentId: number) => void }) {
+export function PublishingView({ open, compose }: { open: (contentId: number) => void; compose: () => void }) {
   const [queue, setQueue] = useState<QueueResult | null>(null);
   const [logs, setLogs] = useState<PublishLog[]>([]);
   const [instagram, setInstagram] = useState<InstagramResult | null>(null);
@@ -85,7 +85,7 @@ export function PublishingView({ open }: { open: (contentId: number) => void }) 
 
   return <div className="publishing-view">
     <InstagramConnection integration={instagram} busy={busy} connect={connect} disconnect={() => setDisconnectInstagram(true)}/>
-    <div className="publishing-notice"><div><Send/><span><strong>Instagram publishing is available</strong><small>Approved single-image posts and Reels can publish through the connected professional account. Jobs, retries, and attempt logs remain visible here.</small></span></div>{queue?.permissions.run && <Button disabled={busy} onClick={() => void run()}><Play/>{busy ? "Processing…" : "Process due jobs"}</Button>}</div>
+    <div className="publishing-notice"><div><Send/><span><strong>Instagram publishing is available</strong><small>Create posts in Composer. Approved single-image posts and Reels can then be scheduled through the connected professional account.</small></span></div><div className="publishing-notice-actions"><Button variant="outline" onClick={compose}><Plus/>Create post</Button>{queue?.permissions.run && <Button disabled={busy} onClick={() => void run()}><Play/>{busy ? "Processing…" : "Process due jobs"}</Button>}</div></div>
     <div className="publishing-metrics">
       <button onClick={() => setFilter("scheduled")}><Clock3/><span>Upcoming</span><strong>{count(["scheduled", "queued"])}</strong></button>
       <button onClick={() => setFilter("retrying")}><RefreshCw/><span>Retrying</span><strong>{count(["retrying", "processing"])}</strong></button>

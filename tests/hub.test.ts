@@ -114,7 +114,23 @@ function fixture() {
     }
     return id;
   }
-  return { sqlite, db, objects, raw, call, upload, file, start, memberId, brandId, pillarId, item,
+  function prepareInstagramPost(contentId: number, variantId: number) {
+    sqlite.prepare(`INSERT INTO social_accounts
+      (workspace_id, platform, provider_account_id, username, display_name, account_type,
+       token_ciphertext, token_iv, token_expires_at, scopes, status)
+      VALUES ('main', 'Instagram', ?, 'creativehubtest', 'Creative Hub Test', 'BUSINESS',
+       'encrypted-test-token', 'test-iv', '2027-01-01T00:00:00.000Z',
+       'instagram_business_basic instagram_business_content_publish', 'connected')`)
+      .run(`fixture-account-${fixtureId}`);
+    const mediaId = Number(sqlite.prepare(`INSERT INTO media_assets
+      (workspace_id, file_name, original_name, kind, mime_type, file_size, storage_key, uploader_member_id)
+      VALUES ('main', 'ready.jpg', 'ready.jpg', 'image', 'image/jpeg', 4, ?, ?)`)
+      .run(`main/tests/${fixtureId}-${contentId}.jpg`, memberId("Owner")).lastInsertRowid);
+    sqlite.prepare(`INSERT INTO platform_variant_media_assets
+      (workspace_id, variant_id, media_asset_id, usage, position) VALUES ('main', ?, ?, 'Main Asset', 0)`)
+      .run(variantId, mediaId);
+  }
+  return { sqlite, db, objects, raw, call, upload, file, start, memberId, brandId, pillarId, item, prepareInstagramPost,
     setInstagram(value: InstagramConfig) { instagram = value; } };
 }
 
@@ -509,6 +525,10 @@ test("Milestone 4 schedules only approved platform versions and keeps one active
   const variantId = Number(variant.lastInsertRowid);
   const denied = await f.call("Viewer", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
   assert.equal(denied.status, 403);
+  const incomplete = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
+  assert.equal(incomplete.status, 409);
+  assert.match(incomplete.data.error, /Connect an Instagram professional account/);
+  f.prepareInstagramPost(contentId, variantId);
   const scheduled = await f.call("Social Media", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
   assert.equal(scheduled.status, 201);
   assert.equal(scheduled.data.job.status, "scheduled");
@@ -551,6 +571,7 @@ test("publishing worker retries temporary errors and preserves a successful exte
   const variantId = Number(f.sqlite.prepare(`INSERT INTO content_platform_variants
     (workspace_id, content_id, platform, title, caption, status)
     VALUES ('main', ?, 'Instagram', 'Retry test', 'Ready', 'Approved')`).run(contentId).lastInsertRowid);
+  f.prepareInstagramPost(contentId, variantId);
   const scheduled = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-09-01T02:00:00.000Z" });
   const actor = (await f.call("Owner", "GET", "workspace")).data.actor;
   let calls = 0;

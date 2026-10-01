@@ -71,11 +71,11 @@ async function loadJob(ctx: Context, id: number) {
   return job;
 }
 async function loadSchedulable(ctx: Context, variantId: number) {
-  const row = await ctx.db.prepare(`SELECT v.id AS variantId, v.platform, c.id, c.title, c.status,
+  const row = await ctx.db.prepare(`SELECT v.id AS variantId, v.platform, v.caption, v.description, c.id, c.title, c.status,
     c.assignee_id AS assigneeId, c.version
     FROM content_platform_variants v JOIN content_items c ON c.id = v.content_id AND c.workspace_id = v.workspace_id
     WHERE v.workspace_id = ? AND v.id = ?`).bind(ctx.actor.workspaceId, variantId)
-    .first<{ variantId: number; platform: string; id: number; title: string; status: ContentItem["status"]; assigneeId: number | null; version: number }>();
+    .first<{ variantId: number; platform: string; caption: string; description: string; id: number; title: string; status: ContentItem["status"]; assigneeId: number | null; version: number }>();
   if (!row) throw new HubError("Platform version not found.", 404);
   if (ctx.actor.role === "Designer" && row.assigneeId !== ctx.actor.id) deny();
   if (!canManagePublishing(ctx.actor.role)) deny();
@@ -84,6 +84,20 @@ async function loadSchedulable(ctx: Context, variantId: number) {
     .bind(ctx.actor.workspaceId, row.id).first();
   if (!approved) throw new HubError("An approved review is required before publishing can be scheduled.", 409);
   return row;
+}
+
+async function schedulableMedia(ctx: Context, variantId: number, contentId: number) {
+  const platformAsset = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
+    FROM platform_variant_media_assets link JOIN media_assets m ON m.id = link.media_asset_id
+    WHERE link.workspace_id = ? AND link.variant_id = ? AND m.kind IN ('image', 'video')
+    ORDER BY CASE link.usage WHEN 'Main Asset' THEN 0 WHEN 'Cover' THEN 1 ELSE 2 END, link.position, link.id LIMIT 1`)
+    .bind(ctx.actor.workspaceId, variantId).first<{ id: number; kind: string; mimeType: string }>();
+  if (platformAsset) return platformAsset;
+  return ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
+    FROM content_media_assets link JOIN media_assets m ON m.id = link.media_asset_id
+    WHERE link.workspace_id = ? AND link.content_id = ? AND m.kind IN ('image', 'video')
+    ORDER BY CASE link.usage WHEN 'Main Asset' THEN 0 WHEN 'Cover' THEN 1 ELSE 2 END, link.position, link.id LIMIT 1`)
+    .bind(ctx.actor.workspaceId, contentId).first<{ id: number; kind: string; mimeType: string }>();
 }
 
 async function listJobs(request: Request, ctx: Context) {
@@ -116,6 +130,14 @@ async function createJob(request: Request, ctx: Context) {
     FROM social_accounts WHERE workspace_id = ? AND platform = 'Instagram' AND status = 'connected'
     ORDER BY updated_at DESC, id DESC LIMIT 1`).bind(ctx.actor.workspaceId)
     .first<{ id: number; username: string; displayName: string }>() : null;
+  if (variant.platform === "Instagram") {
+    if (!account) throw new HubError("Connect an Instagram professional account before scheduling this post.", 409);
+    if (!(variant.caption || variant.description).trim()) throw new HubError("Add the Instagram caption before scheduling this post.", 409);
+    const media = await schedulableMedia(ctx, variant.variantId, variant.id);
+    if (!media) throw new HubError("Attach one Instagram image or video before scheduling this post.", 409);
+    const compatible = media.kind === "image" ? media.mimeType === "image/jpeg" : ["video/mp4", "video/quicktime"].includes(media.mimeType);
+    if (!compatible) throw new HubError("Instagram scheduling currently supports JPEG images and MP4 or MOV videos.", 409);
+  }
   const accountLabel = account ? account.username ? `@${account.username}` : account.displayName || "Instagram account" : "Not connected";
   const result = await ctx.db.prepare(`INSERT INTO publish_jobs
     (workspace_id, content_id, variant_id, platform, social_account_id, account_label, scheduled_at, status, next_attempt_at, created_by_member_id)
@@ -161,9 +183,15 @@ async function retryJob(ctx: Context, job: PublishJob) {
   if (!canManagePublishing(ctx.actor.role)) deny();
   if (!["failed", "blocked"].includes(job.status)) throw new HubError("Only a failed or blocked job can be retried.", 409);
   const now = new Date().toISOString();
+  const account = job.platform === "Instagram" ? await ctx.db.prepare(`SELECT id, username, display_name AS displayName
+    FROM social_accounts WHERE workspace_id = ? AND platform = 'Instagram' AND status = 'connected'
+    ORDER BY updated_at DESC, id DESC LIMIT 1`).bind(ctx.actor.workspaceId)
+    .first<{ id: number; username: string; displayName: string }>() : null;
+  const accountLabel = account ? account.username ? `@${account.username}` : account.displayName || "Instagram account" : job.accountLabel;
   await ctx.db.prepare(`UPDATE publish_jobs SET status = 'queued', attempt_count = 0, next_attempt_at = ?, locked_at = '',
-    last_error_code = '', last_error_message = '', completed_at = '', updated_at = CURRENT_TIMESTAMP
-    WHERE workspace_id = ? AND id = ?`).bind(now, ctx.actor.workspaceId, job.id).run();
+    last_error_code = '', last_error_message = '', completed_at = '', social_account_id = COALESCE(?, social_account_id),
+    account_label = ?, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = ? AND id = ?`)
+    .bind(now, account?.id ?? null, accountLabel, ctx.actor.workspaceId, job.id).run();
   await activity(ctx, "publish_retried", job.id, job.contentTitle, `${job.platform} publishing job returned to the queue.`);
   return json({ job: await loadJob(ctx, job.id) });
 }

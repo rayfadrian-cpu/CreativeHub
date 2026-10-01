@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Activity as ActivityIcon, ArrowUpRight, BadgeCheck, CalendarDays, Columns3, FileText, FolderOpen, Grid2X2, Layers3, LogOut, Megaphone, Plus, RefreshCw, Send, Settings, ShieldAlert, Tag, Users } from "lucide-react";
+import { Activity as ActivityIcon, ArrowUpRight, BadgeCheck, CalendarDays, Columns3, FileText, FolderOpen, Grid2X2, Layers3, LogOut, Megaphone, Plus, RefreshCw, Send, Settings, ShieldAlert, SquarePen, Tag, Users } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -13,6 +13,7 @@ import { Kanban } from "./kanban";
 import { ContentWorkspace, MediaLibraryView } from "./milestone-two";
 import { ApprovalsView } from "./milestone-three";
 import { PublishingView } from "./milestone-four";
+import { ComposerView } from "./composer";
 
 class ApiError extends Error {
   constructor(message: string, public status: number) { super(message); }
@@ -29,17 +30,18 @@ export async function api<T = unknown>(path: string, method = "GET", body?: unkn
   return data;
 }
 
-export type View = "dashboard" | "brand" | "pillars" | "campaigns" | "plan" | "calendar" | "content" | "media" | "approvals" | "publishing" | "activity" | "team" | "settings" | "detail";
+export type View = "dashboard" | "brand" | "pillars" | "campaigns" | "plan" | "calendar" | "content" | "composer" | "media" | "approvals" | "publishing" | "activity" | "team" | "settings" | "detail";
 const nav = [
   ["dashboard", "Dashboard", Grid2X2], ["plan", "Content Plan", Layers3], ["calendar", "Calendar", CalendarDays],
-  ["content", "All Content", FileText], ["media", "Media Library", FolderOpen], ["brand", "Brands", Tag], ["pillars", "Content Pillars", Columns3],
+  ["content", "All Content", FileText], ["composer", "Create Post", SquarePen], ["media", "Media Library", FolderOpen], ["brand", "Brands", Tag], ["pillars", "Content Pillars", Columns3],
   ["campaigns", "Campaigns", Megaphone], ["approvals", "Approvals", BadgeCheck], ["publishing", "Publishing", Send], ["activity", "Activity", ActivityIcon],
 ] as const;
 const titles: Record<View, [string, string]> = {
   dashboard: ["Dashboard", "What is moving, what is ready, and what needs attention."],
   plan: ["Content Plan", "Drag cards between stages. Every change is saved."],
-  calendar: ["Calendar", "Manage planned publishing dates. Publishing remains manual."],
+  calendar: ["Calendar", "Manage planned and scheduled publishing dates."],
   content: ["All Content", "Search and filter the complete content library."],
+  composer: ["Create Post", "Plan, prepare, and submit an Instagram post from one place."],
   media: ["Media Library", "Upload, organize, preview, and reuse creative files."],
   brand: ["Brands", "The identities behind your Campaigns, Pillars, and Content."],
   pillars: ["Content Pillars", "Organize each Brand around clear, repeatable themes."],
@@ -139,10 +141,10 @@ export default function CreativeHub({ user, signOutHref, initialContentId = null
   const refreshKey = data?.items.map(x => `${x.id}:${x.version}`).join("|") ?? "";
   return <SidebarProvider style={{ "--sidebar-width": "218px" } as React.CSSProperties}>
     <Sidebar><SidebarHeader className="hub-sidebar-header"><div className="brand-lockup"><span className="brand-mark"><Layers3 size={20}/></span><span>Creative Hub</span></div><p className="workspace-label">{data?.workspace.name || "Content workspace"}</p></SidebarHeader><SidebarContent><Nav view={view} navigate={navigate} manage={!!actor && managers(actor.role)} owner={actor?.role === "Owner"}/></SidebarContent><SidebarFooter className="hub-profile"><div className="avatar">{initials(actor?.name || user.name)}</div><div className="profile-copy"><strong>{actor?.name || user.name}</strong><span>{actor?.role || "Workspace member"}</span></div><a href={signOutHref} target="_top" aria-label="Log out" title="Log out"><LogOut size={17}/></a></SidebarFooter></Sidebar>
-    <SidebarInset className="hub-main"><header className="hub-topbar"><div className="topbar-location"><SidebarTrigger/><span>{data?.workspace.name || "Creative Hub"}</span><span className="slash">/</span><strong>{titles[view][0]}</strong></div><div className="topbar-actions"><span className="private-label">Member-protected</span>{actor && canCreate(actor.role) && <Button onClick={() => setEditor("new")}><Plus size={16}/>New content</Button>}</div></header><div className="hub-page">{view !== "detail" && <div className="page-heading"><div><h1>{titles[view][0]}</h1><p>{titles[view][1]}</p></div>{view === "dashboard" && <Button variant="outline" onClick={() => navigate("plan")}>Open content plan<ArrowUpRight size={16}/></Button>}</div>}
+    <SidebarInset className="hub-main"><header className="hub-topbar"><div className="topbar-location"><SidebarTrigger/><span>{data?.workspace.name || "Creative Hub"}</span><span className="slash">/</span><strong>{titles[view][0]}</strong></div><div className="topbar-actions"><span className="private-label">Member-protected</span>{actor && canCreate(actor.role) && <Button onClick={() => navigate("composer")}><Plus size={16}/>Create post</Button>}</div></header><div className="hub-page">{view !== "detail" && <div className="page-heading"><div><h1>{titles[view][0]}</h1><p>{titles[view][1]}</p></div>{view === "dashboard" && <Button variant="outline" onClick={() => navigate("plan")}>Open content plan<ArrowUpRight size={16}/></Button>}</div>}
       {error && <div className="error-banner" role="alert"><span>{error}</span><Button variant="outline" onClick={() => void reload().catch(() => {})}><RefreshCw size={15}/>Retry</Button></div>}
       {!data && !error && <div className="loading-grid" aria-label="Loading workspace"><Skeleton className="h-28"/><Skeleton className="h-28"/><Skeleton className="h-28"/><Skeleton className="h-28"/><Skeleton className="col-span-full h-80"/></div>}
-      {data && <>{view === "dashboard" && <Dashboard data={data} navigate={navigate} open={openDetail}/>} {view === "plan" && <Kanban data={data} open={openDetail} move={move} busyIds={busyIds}/>} {view === "content" && <AllContentView data={data} open={openDetail} remove={setDeleteTarget} refreshKey={refreshKey}/>} {view === "calendar" && <CalendarView data={data} open={openDetail}/>} {view === "media" && <MediaLibraryView data={data}/>} {view === "pillars" && <PillarsView data={data} reload={reload}/>} {view === "brand" && <BrandsView data={data} reload={reload}/>} {view === "campaigns" && <CampaignsView data={data} reload={reload}/>} {view === "approvals" && <ApprovalsView open={openDetailId}/>} {view === "publishing" && <PublishingView open={openDetailId}/>} {view === "activity" && <ActivityView/>} {view === "team" && <TeamView data={data} reload={reload}/>} {view === "settings" && <WorkspaceSettings data={data} reload={reload}/>} {view === "detail" && detailId && <ContentWorkspace contentId={detailId} data={data} back={() => navigate("content")} changed={reload}/>}</>}
+      {data && <>{view === "dashboard" && <Dashboard data={data} navigate={navigate} open={openDetail}/>} {view === "plan" && <Kanban data={data} open={openDetail} move={move} busyIds={busyIds}/>} {view === "content" && <AllContentView data={data} open={openDetail} remove={setDeleteTarget} refreshKey={refreshKey}/>} {view === "composer" && <ComposerView data={data} saved={async id => { await reload(); openDetailId(id); }}/>} {view === "calendar" && <CalendarView data={data} open={openDetail}/>} {view === "media" && <MediaLibraryView data={data}/>} {view === "pillars" && <PillarsView data={data} reload={reload}/>} {view === "brand" && <BrandsView data={data} reload={reload}/>} {view === "campaigns" && <CampaignsView data={data} reload={reload}/>} {view === "approvals" && <ApprovalsView open={openDetailId}/>} {view === "publishing" && <PublishingView open={openDetailId} compose={() => navigate("composer")}/>} {view === "activity" && <ActivityView/>} {view === "team" && <TeamView data={data} reload={reload}/>} {view === "settings" && <WorkspaceSettings data={data} reload={reload}/>} {view === "detail" && detailId && <ContentWorkspace contentId={detailId} data={data} back={() => navigate("content")} changed={reload}/>}</>}
     </div></SidebarInset>
     {data && editor && <ContentEditor key={editor === "new" ? "new" : editor.id + ":" + editor.version} item={editor === "new" ? null : editor} data={data} close={() => setEditor(null)} save={saveContent}/>}<Confirm open={!!deleteTarget} close={() => setDeleteTarget(null)} title="Delete this content?" description={deleteTarget ? "“" + deleteTarget.title + "” will be permanently removed. An activity record will remain." : ""} label="Delete content" action={async () => { await api("content/" + deleteTarget!.id, "DELETE", { version: deleteTarget!.version }); setDeleteTarget(null); await reload(); toast.success("Content deleted"); }}/><Toaster theme="light" position="top-right" richColors/>
   </SidebarProvider>;

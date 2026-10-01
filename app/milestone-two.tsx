@@ -46,7 +46,7 @@ async function metadata(file: File) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-async function uploadFile(file: File): Promise<MediaAsset> {
+export async function uploadFile(file: File): Promise<MediaAsset> {
   const details = await metadata(file).catch(() => ({}));
   const params = new URLSearchParams({ fileName: file.name });
   for (const [key, value] of Object.entries(details)) params.set(key, String(value));

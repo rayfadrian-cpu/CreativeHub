@@ -45,6 +45,13 @@ const itemCols = `c.id, c.workspace_id AS workspaceId, c.title,
   COALESCE(creator.name, '') AS creatorName, c.deadline, c.publish_date AS publishDate,
   c.platform, c.priority, c.status, c.caption, c.copy_hook AS copyHook, c.copy_cta AS copyCta,
   c.copy_notes AS copyNotes, c.notes, c.version,
+  (SELECT COUNT(*) FROM content_platform_variants pv WHERE pv.workspace_id = c.workspace_id AND pv.content_id = c.id) AS variantCount,
+  (SELECT COUNT(*) FROM content_platform_variants pvc WHERE pvc.workspace_id = c.workspace_id AND pvc.content_id = c.id AND TRIM(pvc.caption) <> '') AS variantCaptionCount,
+  ((SELECT COUNT(*) FROM content_media_assets cma WHERE cma.workspace_id = c.workspace_id AND cma.content_id = c.id) +
+   (SELECT COUNT(*) FROM platform_variant_media_assets pvma JOIN content_platform_variants pv2 ON pv2.id = pvma.variant_id
+    WHERE pvma.workspace_id = c.workspace_id AND pv2.content_id = c.id)) AS mediaCount,
+  COALESCE((SELECT pj.status FROM publish_jobs pj WHERE pj.workspace_id = c.workspace_id AND pj.content_id = c.id ORDER BY pj.id DESC LIMIT 1), '') AS publishingStatus,
+  COALESCE((SELECT pj.account_label FROM publish_jobs pj WHERE pj.workspace_id = c.workspace_id AND pj.content_id = c.id ORDER BY pj.id DESC LIMIT 1), '') AS publishingAccount,
   c.review_decision AS reviewDecision, c.created_at AS createdAt, c.updated_at AS updatedAt`;
 const itemFrom = `content_items c
   LEFT JOIN brands b ON b.id = c.brand_id AND b.workspace_id = c.workspace_id
