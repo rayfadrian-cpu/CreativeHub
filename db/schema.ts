@@ -217,6 +217,7 @@ export const contentPlatformVariants = sqliteTable("content_platform_variants", 
   cta: text("cta").notNull().default(""),
   notes: text("notes").notNull().default(""),
   plannedPublishAt: text("planned_publish_at").notNull().default(""),
+  publishFormat: text("publish_format").notNull().default("Single image"),
   status: text("status").notNull().default("Idea"),
   version: integer("version").notNull().default(1),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -233,6 +234,7 @@ export const contentMediaAssets = sqliteTable("content_media_assets", {
   mediaAssetId: integer("media_asset_id").notNull().references(() => mediaAssets.id, { onDelete: "restrict" }),
   usage: text("usage").notNull().default("Supporting Asset"),
   position: integer("position").notNull().default(0),
+  altText: text("alt_text").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("content_media_assets_unique").on(table.contentId, table.mediaAssetId),
@@ -246,6 +248,7 @@ export const platformVariantMediaAssets = sqliteTable("platform_variant_media_as
   mediaAssetId: integer("media_asset_id").notNull().references(() => mediaAssets.id, { onDelete: "restrict" }),
   usage: text("usage").notNull().default("Supporting Asset"),
   position: integer("position").notNull().default(0),
+  altText: text("alt_text").notNull().default(""),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [
   uniqueIndex("platform_variant_media_assets_unique").on(table.variantId, table.mediaAssetId),

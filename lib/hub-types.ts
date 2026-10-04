@@ -2,10 +2,20 @@ export const statuses = ["Idea", "Writing", "Design", "Review", "Revision", "App
 export const roles = ["Owner", "Admin", "Content Strategist", "Creative", "Designer", "Social Media", "Approver", "Viewer"] as const;
 export const priorities = ["Low", "Normal", "High", "Urgent"] as const;
 export const platforms = ["Instagram", "TikTok", "YouTube", "LinkedIn", "Facebook", "X / Twitter"] as const;
-export const variantPlatforms = ["Instagram", "TikTok", "Facebook", "LinkedIn", "YouTube"] as const;
+export const variantPlatforms = ["Instagram", "TikTok", "Facebook", "LinkedIn", "YouTube", "X / Twitter"] as const;
 export const assetUsages = ["Main Asset", "Cover", "Thumbnail", "Supporting Asset", "Reference"] as const;
 export const campaignStatuses = ["Draft", "Active", "Paused", "Completed", "Archived"] as const;
 export const contentFormats = ["Post", "Carousel", "Story", "Reel", "Video", "Article", "Other"] as const;
+export const publishFormats = ["Single image", "Carousel", "Short video", "Long video"] as const;
+export type PublishFormat = typeof publishFormats[number];
+export const platformPublishFormats: Record<typeof variantPlatforms[number], readonly PublishFormat[]> = {
+  Instagram: ["Single image", "Carousel", "Short video"],
+  TikTok: ["Short video", "Carousel"],
+  Facebook: ["Single image", "Carousel", "Short video", "Long video"],
+  LinkedIn: ["Single image", "Carousel", "Short video", "Long video"],
+  YouTube: ["Short video", "Long video"],
+  "X / Twitter": ["Single image", "Carousel", "Short video", "Long video"],
+};
 export const publishJobStatuses = ["scheduled", "queued", "processing", "retrying", "blocked", "failed", "published", "cancelled"] as const;
 
 export type Role = typeof roles[number];
@@ -44,11 +54,11 @@ export type MediaAsset = {
   durationSeconds: number | null; uploaderMemberId: number | null; uploaderName: string; createdAt: string; updatedAt: string;
   attachmentCount: number;
 };
-export type ContentAsset = MediaAsset & { linkId: number; usage: typeof assetUsages[number]; position: number };
+export type ContentAsset = MediaAsset & { linkId: number; usage: typeof assetUsages[number]; position: number; altText: string };
 export type PlatformVariant = {
   id: number; contentId: number; platform: typeof variantPlatforms[number]; title: string; caption: string;
   description: string; hashtags: string; cta: string; notes: string; plannedPublishAt: string;
-  status: Status; version: number; createdAt: string; updatedAt: string; assets: ContentAsset[];
+  publishFormat: PublishFormat; status: Status; version: number; createdAt: string; updatedAt: string; assets: ContentAsset[];
 };
 export type Activity = {
   id: number; actorMemberId: number | null; actorName: string; action: string; entityType: string;

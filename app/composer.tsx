@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Check, CircleAlert, FileVideo, Image as ImageIcon, LoaderCircle, Upload } from "lucide-react";
+import { ArrowLeft, ArrowRight, Camera, Check, CircleAlert, FileVideo, Image as ImageIcon, LoaderCircle, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +28,7 @@ type ComposerForm = {
   assigneeId: number | null;
   pic: string;
   priority: ContentItem["priority"];
-  postType: "Single image" | "Reel";
+  postType: "Single image" | "Carousel" | "Short video";
   plannedPublishAt: string;
   caption: string;
   hashtags: string;
@@ -57,16 +57,24 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
   });
   const [instagram, setInstagram] = useState<InstagramResult | null>(null);
   const [assets, setAssets] = useState<MediaAsset[]>([]);
-  const [selectedAssetId, setSelectedAssetId] = useState<number | null>(null);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<number[]>([]);
+  const [pickerAssetId, setPickerAssetId] = useState("");
+  const [altText, setAltText] = useState<Record<number, string>>({});
+  const [previewIndex, setPreviewIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const uploadInput = useRef<HTMLInputElement>(null);
   const allowed = canCreate(data.actor.role);
-  const selectedAsset = assets.find(asset => asset.id === selectedAssetId) ?? null;
+  const selectedAssets = selectedAssetIds.map(id => assets.find(asset => asset.id === id)).filter((asset): asset is MediaAsset => !!asset);
+  const selectedAsset = selectedAssets[Math.min(previewIndex, Math.max(selectedAssets.length - 1, 0))] ?? null;
   const campaigns = data.campaigns.filter(campaign => campaign.brandId === form.brandId && !campaign.archived);
   const pillars = data.pillars.filter(pillar => pillar.brandId === form.brandId && pillar.active);
-  const compatibleMedia = instagramCompatible(selectedAsset);
+  const compatibleMedia = form.postType === "Single image"
+    ? selectedAssets.length === 1 && selectedAssets[0].kind === "image" && selectedAssets[0].mimeType === "image/jpeg"
+    : form.postType === "Carousel"
+      ? selectedAssets.length >= 2 && selectedAssets.length <= 10 && selectedAssets.every(asset => asset.kind === "image" && asset.mimeType === "image/jpeg")
+      : selectedAssets.length === 1 && selectedAssets[0].kind === "video" && ["video/mp4", "video/quicktime"].includes(selectedAssets[0].mimeType);
 
   const load = async () => {
     setLoading(true);
@@ -85,7 +93,7 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
   const checks = useMemo(() => [
     { label: "Content title and Brand", ready: !!form.title.trim() && !!form.brandId },
     { label: "Instagram account", ready: !!instagram?.account },
-    { label: "Instagram-compatible media", ready: compatibleMedia },
+    { label: form.postType === "Carousel" ? "2–10 ordered JPEG images" : form.postType === "Short video" ? "One MP4 or MOV video" : "One JPEG image", ready: compatibleMedia },
     { label: "Platform caption", ready: !!form.caption.trim() },
     { label: "Planned publish time", ready: !!form.plannedPublishAt },
   ], [compatibleMedia, form, instagram]);
@@ -96,23 +104,56 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
     setForm(current => ({ ...current, [key]: value }));
   }
 
-  function selectAsset(id: number) {
+  function addAsset(id: number) {
     const asset = assets.find(item => item.id === id);
-    setSelectedAssetId(id);
-    if (asset?.kind === "video") update("postType", "Reel");
-    if (asset?.kind === "image") update("postType", "Single image");
+    if (!asset || selectedAssetIds.includes(id)) return;
+    if (form.postType === "Short video" && asset.kind !== "video") return setError("Short video needs an MP4 or MOV video.");
+    if (form.postType !== "Short video" && asset.kind !== "image") return setError(`${form.postType} needs JPEG images.`);
+    if (form.postType === "Carousel" && selectedAssetIds.length >= 10) return setError("A carousel can contain at most 10 images.");
+    setError("");
+    setSelectedAssetIds(current => form.postType === "Carousel" ? [...current, id] : [id]);
+    setPreviewIndex(form.postType === "Carousel" ? selectedAssetIds.length : 0);
+    setPickerAssetId("");
+  }
+
+  function changePostType(postType: ComposerForm["postType"]) {
+    update("postType", postType);
+    setSelectedAssetIds(current => current.filter(id => {
+      const asset = assets.find(item => item.id === id);
+      return postType === "Short video" ? asset?.kind === "video" : asset?.kind === "image";
+    }).slice(0, postType === "Carousel" ? 10 : 1));
+    setPreviewIndex(0);
+    setError("");
+  }
+
+  function moveAsset(index: number, offset: number) {
+    setSelectedAssetIds(current => {
+      const next = [...current];
+      [next[index], next[index + offset]] = [next[index + offset], next[index]];
+      return next;
+    });
+    setPreviewIndex(index + offset);
+  }
+
+  function removeAsset(id: number) {
+    setSelectedAssetIds(current => current.filter(value => value !== id));
+    setAltText(current => { const next = { ...current }; delete next[id]; return next; });
+    setPreviewIndex(0);
   }
 
   async function upload(files: FileList | null) {
-    const file = files?.[0];
-    if (!file) return;
+    const chosen = files ? Array.from(files) : [];
+    if (!chosen.length) return;
     setBusy(true); setError("");
     try {
-      const asset = await uploadFile(file);
-      setAssets(current => [asset, ...current.filter(item => item.id !== asset.id)]);
-      setSelectedAssetId(asset.id);
-      update("postType", asset.kind === "video" ? "Reel" : "Single image");
-      toast.success("Media uploaded to the library and selected");
+      const uploaded: MediaAsset[] = [];
+      for (const file of chosen.slice(0, form.postType === "Carousel" ? Math.max(10 - selectedAssetIds.length, 0) : 1)) uploaded.push(await uploadFile(file));
+      const compatible = uploaded.filter(asset => form.postType === "Short video" ? asset.kind === "video" : asset.kind === "image");
+      setAssets(current => [...compatible, ...current.filter(item => !compatible.some(asset => asset.id === item.id))]);
+      setSelectedAssetIds(current => form.postType === "Carousel" ? [...current, ...compatible.map(asset => asset.id)].slice(0, 10) : compatible.slice(0, 1).map(asset => asset.id));
+      setPreviewIndex(form.postType === "Carousel" ? selectedAssetIds.length : 0);
+      if (compatible.length !== uploaded.length) setError(`Some files were uploaded to Media Library but were not selected because they do not match ${form.postType}.`);
+      toast.success(`${compatible.length} media file${compatible.length === 1 ? "" : "s"} uploaded and selected`);
     } catch (issue) { setError((issue as Error).message); }
     finally { setBusy(false); if (uploadInput.current) uploadInput.current.value = ""; }
   }
@@ -126,7 +167,7 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
       const created = await api<{ item: ContentItem }>("content", "POST", {
         title: form.title, brandId: form.brandId, campaignId: form.campaignId, pillarId: form.pillarId,
         objective: "", brief: form.brief, targetAudience: "", keyMessage: "", contentDirection: "", references: "",
-        format: form.postType === "Reel" ? "Reel" : "Post", priority: form.priority,
+        format: form.postType === "Short video" ? "Reel" : form.postType === "Carousel" ? "Carousel" : "Post", priority: form.priority,
         assigneeId: form.assigneeId, pic: member?.name ?? form.pic, deadline: "",
         publishDate: form.plannedPublishAt.slice(0, 10), platform: "Instagram", status: "Idea",
         caption: form.caption, copyHook: "", copyCta: form.cta, copyNotes: "", notes: form.notes,
@@ -135,9 +176,11 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
       const result = await api<{ variant: PlatformVariant }>(`content/${created.item.id}/variants`, "POST", {
         platform: "Instagram", title: form.title, caption: form.caption, description: "",
         hashtags: form.hashtags, cta: form.cta, notes: form.notes,
-        plannedPublishAt: form.plannedPublishAt, status: "Idea",
+        plannedPublishAt: form.plannedPublishAt, publishFormat: form.postType, status: "Idea",
       });
-      if (selectedAsset) await api(`variants/${result.variant.id}/assets`, "POST", { mediaAssetId: selectedAsset.id, usage: "Main Asset" });
+      for (const [index, asset] of selectedAssets.entries()) await api(`variants/${result.variant.id}/assets`, "POST", {
+        mediaAssetId: asset.id, usage: index === 0 ? "Main Asset" : "Supporting Asset", altText: altText[asset.id] ?? "",
+      });
       if (mode === "review") await api(`content/${created.item.id}/approval/submit`, "POST", { version: created.item.version, note: "Submitted from Unified Composer." });
       toast.success(mode === "review" ? "Post created and sent for approval" : "Post draft saved");
       await saved(created.item.id);
@@ -171,20 +214,22 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
         <div className="composer-section-heading"><span>2</span><div><h2>Choose destination</h2><p>The platform version stays linked to the same master content.</p></div></div>
         <div className="destination-grid">
           <div className="destination-card selected"><Camera/><div><strong>Instagram</strong><span>{instagram?.account ? `@${instagram.account.username}` : "No account connected"}</span><small>{instagram?.account ? `${instagram.account.accountType} · connected securely` : "Connect an account from Publishing before submitting."}</small></div><Check/></div>
-          <Field label="Post type" id="composer-type"><Choice id="composer-type" label="Post type" value={form.postType} options={options(["Single image", "Reel"])} disabled={!!selectedAsset} onChange={value => update("postType", value as ComposerForm["postType"])}/></Field>
+          <Field label="Post type" id="composer-type"><Choice id="composer-type" label="Post type" value={form.postType} options={options(["Single image", "Carousel", "Short video"])} onChange={value => changePostType(value as ComposerForm["postType"])}/></Field>
         </div>
       </section>
 
       <section className="panel composer-section">
-        <div className="composer-section-heading"><span>3</span><div><h2>Add media</h2><p>Choose a reusable Media Library file or upload a new one.</p></div></div>
+        <div className="composer-section-heading"><span>3</span><div><h2>Add media</h2><p>{form.postType === "Carousel" ? "Add 2–10 JPEG images. Their order below is the order Instagram will publish." : "Choose a reusable Media Library file or upload a new one."}</p></div></div>
         <div className="composer-media-toolbar">
-          <Choice label="Media Library file" value={selectedAssetId == null ? "_none" : String(selectedAssetId)} options={[{ value: "_none", label: "Choose a Media Library file" }, ...assets.map(asset => ({ value: String(asset.id), label: `${asset.fileName} · ${asset.kind}${instagramCompatible(asset) ? "" : " · unsupported for publishing"}` }))]} onChange={value => value === "_none" ? setSelectedAssetId(null) : selectAsset(Number(value))}/>
-          {canUploadMedia(data.actor.role) && <><input ref={uploadInput} hidden type="file" accept="image/jpeg,video/mp4,video/quicktime" onChange={event => void upload(event.target.files)}/><Button type="button" variant="outline" disabled={busy} onClick={() => uploadInput.current?.click()}><Upload/>Upload new</Button></>}
+          <Choice label="Media Library file" value={pickerAssetId || "_none"} options={[{ value: "_none", label: "Choose a Media Library file" }, ...assets.filter(asset => !selectedAssetIds.includes(asset.id) && (form.postType === "Short video" ? asset.kind === "video" : asset.kind === "image")).map(asset => ({ value: String(asset.id), label: `${asset.fileName} · ${asset.kind}${instagramCompatible(asset) ? "" : " · unsupported for publishing"}` }))]} onChange={value => { setPickerAssetId(value === "_none" ? "" : value); if (value !== "_none") addAsset(Number(value)); }}/>
+          {canUploadMedia(data.actor.role) && <><input ref={uploadInput} hidden type="file" multiple={form.postType === "Carousel"} accept={form.postType === "Short video" ? "video/mp4,video/quicktime" : "image/jpeg"} onChange={event => void upload(event.target.files)}/><Button type="button" variant="outline" disabled={busy || form.postType === "Carousel" && selectedAssets.length >= 10} onClick={() => uploadInput.current?.click()}><Upload/>Upload {form.postType === "Carousel" ? "images" : "new"}</Button></>}
         </div>
-        {selectedAsset ? <div className="composer-selected-media">
-          <div className="composer-media-preview">{selectedAsset.kind === "image" ? <img src={`/api/hub/media/${selectedAsset.id}/file`} alt=""/> : <video src={`/api/hub/media/${selectedAsset.id}/file`} controls preload="metadata"/>}</div>
-          <div><span>{selectedAsset.kind === "video" ? <FileVideo/> : <ImageIcon/>}</span><strong>{selectedAsset.fileName}</strong><p>{selectedAsset.mimeType} · {bytes(selectedAsset.fileSize)}{selectedAsset.width && selectedAsset.height ? ` · ${selectedAsset.width}×${selectedAsset.height}` : ""}</p><small>{compatibleMedia ? "Ready for Instagram publishing. The original stays in Media Library if detached." : "This format can be saved as a draft, but Instagram publishing requires JPG, MP4, or MOV."}</small></div>
-        </div> : <div className="composer-media-empty"><ImageIcon/><span>No media selected yet</span></div>}
+        {selectedAssets.length ? <div className="composer-media-list">{selectedAssets.map((asset, index) => <article className="composer-media-item" key={asset.id}>
+          <div className="composer-media-preview">{asset.kind === "image" ? <img src={`/api/hub/media/${asset.id}/file`} alt={altText[asset.id] ?? ""}/> : <video src={`/api/hub/media/${asset.id}/file`} controls preload="metadata"/>}<span>{index + 1}</span></div>
+          <div className="composer-media-copy"><strong>{asset.fileName}</strong><p>{asset.mimeType} · {bytes(asset.fileSize)}{asset.width && asset.height ? ` · ${asset.width}×${asset.height}` : ""}</p>{asset.kind === "image" && <Input aria-label={`Alt text for ${asset.fileName}`} maxLength={1000} value={altText[asset.id] ?? ""} onChange={event => setAltText(current => ({ ...current, [asset.id]: event.target.value }))} placeholder="Alt text (optional accessibility description)"/>}<small>{index === 0 ? "Cover / first published item" : `Carousel item ${index + 1}`}</small></div>
+          <div className="composer-media-actions"><Button type="button" size="icon" variant="ghost" disabled={!index} aria-label="Move media left" onClick={() => moveAsset(index, -1)}><ArrowLeft/></Button><Button type="button" size="icon" variant="ghost" disabled={index === selectedAssets.length - 1} aria-label="Move media right" onClick={() => moveAsset(index, 1)}><ArrowRight/></Button><Button type="button" size="icon" variant="ghost" aria-label={`Remove ${asset.fileName}`} onClick={() => removeAsset(asset.id)}><Trash2/></Button></div>
+        </article>)}</div> : <div className="composer-media-empty"><ImageIcon/><span>No media selected yet</span></div>}
+        {!!selectedAssets.length && <p className={compatibleMedia ? "composer-media-note ready" : "composer-media-note missing"}>{compatibleMedia ? "Media is ready for Instagram publishing. Original files stay in Media Library." : form.postType === "Carousel" ? "Add 2–10 JPEG images before submitting for review." : `Choose one compatible ${form.postType === "Short video" ? "MP4 or MOV video" : "JPEG image"}.`}</p>}
       </section>
 
       <section className="panel composer-section">
@@ -201,7 +246,7 @@ export function ComposerView({ data, saved }: { data: WorkspaceData; saved: (con
     <aside className="composer-side">
       <section className="panel composer-preview">
         <div className="composer-preview-account"><span className="instagram-avatar">{instagram?.account?.profilePictureUrl ? <img src={instagram.account.profilePictureUrl} alt=""/> : <Camera/>}</span><div><strong>{instagram?.account?.username ? `@${instagram.account.username}` : "Instagram account"}</strong><small>{form.postType}</small></div></div>
-        <div className="composer-preview-media">{selectedAsset?.kind === "image" ? <img src={`/api/hub/media/${selectedAsset.id}/file`} alt="Post preview"/> : selectedAsset?.kind === "video" ? <video src={`/api/hub/media/${selectedAsset.id}/file`} controls preload="metadata"/> : <ImageIcon/>}</div>
+        <div className="composer-preview-media">{selectedAsset?.kind === "image" ? <img src={`/api/hub/media/${selectedAsset.id}/file`} alt={altText[selectedAsset.id] || "Post preview"}/> : selectedAsset?.kind === "video" ? <video src={`/api/hub/media/${selectedAsset.id}/file`} controls preload="metadata"/> : <ImageIcon/>}{selectedAssets.length > 1 && <><Button type="button" size="icon" variant="secondary" className="composer-preview-previous" aria-label="Previous carousel item" onClick={() => setPreviewIndex(current => (current - 1 + selectedAssets.length) % selectedAssets.length)}><ArrowLeft/></Button><Button type="button" size="icon" variant="secondary" className="composer-preview-next" aria-label="Next carousel item" onClick={() => setPreviewIndex(current => (current + 1) % selectedAssets.length)}><ArrowRight/></Button><span className="composer-preview-count">{previewIndex + 1}/{selectedAssets.length}</span></>}</div>
         <div className="composer-preview-copy"><strong>{instagram?.account?.username ? `@${instagram.account.username}` : "Caption preview"}</strong><p>{form.caption || "Your Instagram caption will appear here."}</p>{form.hashtags && <span>{form.hashtags}</span>}{form.cta && <p>{form.cta}</p>}</div>
       </section>
       <section className="panel composer-readiness">

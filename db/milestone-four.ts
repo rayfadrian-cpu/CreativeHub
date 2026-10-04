@@ -1,13 +1,13 @@
 import {
   canManagePublishing, publishJobStatuses, variantPlatforms,
-  type Actor, type ContentItem, type PublishJob, type PublishJobStatus, type PublishLog,
+  type Actor, type ContentItem, type PublishFormat, type PublishJob, type PublishJobStatus, type PublishLog,
 } from "../lib/hub-types.ts";
 import { HubError } from "./hub-error.ts";
 
 type Context = { db: D1Database; actor: Actor; connectors?: PublishingConnectors };
 type PublishPayload = {
   jobId: number; contentId: number; contentTitle: string; variantId: number; platform: string;
-  title: string; caption: string; description: string; hashtags: string; cta: string;
+  publishFormat: PublishFormat; title: string; caption: string; description: string; hashtags: string; cta: string;
 };
 export type PublishingConnectorResult =
   | { ok: true; externalPostId: string; externalPostUrl?: string }
@@ -71,11 +71,11 @@ async function loadJob(ctx: Context, id: number) {
   return job;
 }
 async function loadSchedulable(ctx: Context, variantId: number) {
-  const row = await ctx.db.prepare(`SELECT v.id AS variantId, v.platform, v.caption, v.description, c.id, c.title, c.status,
+  const row = await ctx.db.prepare(`SELECT v.id AS variantId, v.platform, v.publish_format AS publishFormat, v.caption, v.description, c.id, c.title, c.status,
     c.assignee_id AS assigneeId, c.version
     FROM content_platform_variants v JOIN content_items c ON c.id = v.content_id AND c.workspace_id = v.workspace_id
     WHERE v.workspace_id = ? AND v.id = ?`).bind(ctx.actor.workspaceId, variantId)
-    .first<{ variantId: number; platform: string; caption: string; description: string; id: number; title: string; status: ContentItem["status"]; assigneeId: number | null; version: number }>();
+    .first<{ variantId: number; platform: string; publishFormat: PublishFormat; caption: string; description: string; id: number; title: string; status: ContentItem["status"]; assigneeId: number | null; version: number }>();
   if (!row) throw new HubError("Platform version not found.", 404);
   if (ctx.actor.role === "Designer" && row.assigneeId !== ctx.actor.id) deny();
   if (!canManagePublishing(ctx.actor.role)) deny();
@@ -87,17 +87,41 @@ async function loadSchedulable(ctx: Context, variantId: number) {
 }
 
 async function schedulableMedia(ctx: Context, variantId: number, contentId: number) {
-  const platformAsset = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
+  const platformAssets = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
     FROM platform_variant_media_assets link JOIN media_assets m ON m.id = link.media_asset_id
-    WHERE link.workspace_id = ? AND link.variant_id = ? AND m.kind IN ('image', 'video')
-    ORDER BY CASE link.usage WHEN 'Main Asset' THEN 0 WHEN 'Cover' THEN 1 ELSE 2 END, link.position, link.id LIMIT 1`)
-    .bind(ctx.actor.workspaceId, variantId).first<{ id: number; kind: string; mimeType: string }>();
-  if (platformAsset) return platformAsset;
-  return ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
+    WHERE link.workspace_id = ? AND link.variant_id = ? AND link.usage IN ('Main Asset', 'Supporting Asset') AND m.kind IN ('image', 'video')
+    ORDER BY link.position, link.id`)
+    .bind(ctx.actor.workspaceId, variantId).all<{ id: number; kind: string; mimeType: string }>();
+  if (platformAssets.results.length) return platformAssets.results;
+  const contentAssets = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
     FROM content_media_assets link JOIN media_assets m ON m.id = link.media_asset_id
-    WHERE link.workspace_id = ? AND link.content_id = ? AND m.kind IN ('image', 'video')
-    ORDER BY CASE link.usage WHEN 'Main Asset' THEN 0 WHEN 'Cover' THEN 1 ELSE 2 END, link.position, link.id LIMIT 1`)
-    .bind(ctx.actor.workspaceId, contentId).first<{ id: number; kind: string; mimeType: string }>();
+    WHERE link.workspace_id = ? AND link.content_id = ? AND link.usage IN ('Main Asset', 'Supporting Asset') AND m.kind IN ('image', 'video')
+    ORDER BY link.position, link.id`)
+    .bind(ctx.actor.workspaceId, contentId).all<{ id: number; kind: string; mimeType: string }>();
+  return contentAssets.results;
+}
+
+function validateInstagramMedia(publishFormat: PublishFormat, media: Array<{ kind: string; mimeType: string }>) {
+  if (publishFormat === "Single image") {
+    if (media.length !== 1 || media[0].kind !== "image" || media[0].mimeType !== "image/jpeg") {
+      throw new HubError("Single image publishing requires exactly one JPEG image.", 409);
+    }
+    return;
+  }
+  if (publishFormat === "Carousel") {
+    if (media.length < 2 || media.length > 10) throw new HubError("Instagram Carousel requires 2 to 10 images.", 409);
+    if (media.some(asset => asset.kind !== "image" || asset.mimeType !== "image/jpeg")) {
+      throw new HubError("Instagram Carousel currently supports JPEG images only.", 409);
+    }
+    return;
+  }
+  if (publishFormat === "Short video") {
+    if (media.length !== 1 || media[0].kind !== "video" || !["video/mp4", "video/quicktime"].includes(media[0].mimeType)) {
+      throw new HubError("Instagram Reel publishing requires exactly one MP4 or MOV video.", 409);
+    }
+    return;
+  }
+  throw new HubError(`${publishFormat} is not available for Instagram publishing. Create a compatible Instagram version instead.`, 409);
 }
 
 async function listJobs(request: Request, ctx: Context) {
@@ -122,6 +146,7 @@ async function createJob(request: Request, ctx: Context) {
   const input = await jsonBody(request);
   const variant = await loadSchedulable(ctx, idOf(input.variantId));
   if (!variantPlatforms.includes(variant.platform as typeof variantPlatforms[number])) throw new HubError("This platform is not supported by the publishing queue.");
+  if (variant.platform !== "Instagram") throw new HubError(`${variant.platform} publishing is not connected yet. Keep this platform version as a draft and schedule it after its account connector is added.`, 409);
   const scheduledAt = scheduleTime(input.scheduledAt);
   const duplicate = await ctx.db.prepare(`SELECT id FROM publish_jobs WHERE workspace_id = ? AND variant_id = ?
     AND status IN ('scheduled', 'queued', 'processing', 'retrying', 'blocked')`).bind(ctx.actor.workspaceId, variant.variantId).first();
@@ -134,9 +159,7 @@ async function createJob(request: Request, ctx: Context) {
     if (!account) throw new HubError("Connect an Instagram professional account before scheduling this post.", 409);
     if (!(variant.caption || variant.description).trim()) throw new HubError("Add the Instagram caption before scheduling this post.", 409);
     const media = await schedulableMedia(ctx, variant.variantId, variant.id);
-    if (!media) throw new HubError("Attach one Instagram image or video before scheduling this post.", 409);
-    const compatible = media.kind === "image" ? media.mimeType === "image/jpeg" : ["video/mp4", "video/quicktime"].includes(media.mimeType);
-    if (!compatible) throw new HubError("Instagram scheduling currently supports JPEG images and MP4 or MOV videos.", 409);
+    validateInstagramMedia(variant.publishFormat, media);
   }
   const accountLabel = account ? account.username ? `@${account.username}` : account.displayName || "Instagram account" : "Not connected";
   const result = await ctx.db.prepare(`INSERT INTO publish_jobs
@@ -236,13 +259,13 @@ export async function processDuePublishJobs(db: D1Database, actor: Actor, connec
       outcomes.push({ id: job.id, status: "blocked" });
       continue;
     }
-    const variant = await db.prepare(`SELECT v.title, v.caption, v.description, v.hashtags, v.cta
+    const variant = await db.prepare(`SELECT v.title, v.caption, v.description, v.hashtags, v.cta, v.publish_format AS publishFormat
       FROM content_platform_variants v WHERE v.workspace_id = ? AND v.id = ?`).bind(actor.workspaceId, job.variantId)
-      .first<{ title: string; caption: string; description: string; hashtags: string; cta: string }>();
+      .first<{ title: string; caption: string; description: string; hashtags: string; cta: string; publishFormat: PublishFormat }>();
     let result: PublishingConnectorResult;
     try {
       result = await connector.publish({ jobId: job.id, contentId: job.contentId, contentTitle: job.contentTitle,
-        variantId: job.variantId, platform: job.platform, title: variant?.title ?? job.contentTitle,
+        variantId: job.variantId, platform: job.platform, publishFormat: variant?.publishFormat ?? "Single image", title: variant?.title ?? job.contentTitle,
         caption: variant?.caption ?? "", description: variant?.description ?? "", hashtags: variant?.hashtags ?? "", cta: variant?.cta ?? "" });
     } catch {
       result = { ok: false, retryable: true, errorCode: "CONNECTOR_UNAVAILABLE", errorMessage: "The publishing connector did not respond." };

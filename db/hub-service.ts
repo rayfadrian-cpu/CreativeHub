@@ -305,11 +305,40 @@ async function ensureWorkspaceModel(db: D1Database, actor: Actor) {
 
   currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
     .bind(actor.workspaceId).first<{ modelVersion: number }>();
-  if ((currentVersion?.modelVersion ?? 0) >= 5) return;
-  await db.prepare("UPDATE workspaces SET model_version = 5, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+  if ((currentVersion?.modelVersion ?? 0) < 5) {
+    await db.prepare("UPDATE workspaces SET model_version = 5, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .bind(actor.workspaceId).run();
+    await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
+      "Milestone 4 publishing queue and log records are ready.", { modelVersion: 5 });
+  }
+
+  currentVersion = await db.prepare("SELECT model_version AS modelVersion FROM workspaces WHERE id = ?")
+    .bind(actor.workspaceId).first<{ modelVersion: number }>();
+  if ((currentVersion?.modelVersion ?? 0) >= 6) return;
+  await db.prepare(`UPDATE content_platform_variants SET publish_format = CASE
+    WHEN platform = 'TikTok' AND EXISTS (
+      SELECT 1 FROM content_items c WHERE c.id = content_platform_variants.content_id AND c.format = 'Carousel'
+    ) THEN 'Carousel'
+    WHEN platform = 'TikTok' THEN 'Short video'
+    WHEN platform = 'YouTube' AND EXISTS (
+      SELECT 1 FROM content_items c WHERE c.id = content_platform_variants.content_id AND c.format = 'Reel'
+    ) THEN 'Short video'
+    WHEN platform = 'YouTube' THEN 'Long video'
+    WHEN EXISTS (
+      SELECT 1 FROM content_items c WHERE c.id = content_platform_variants.content_id AND c.format = 'Carousel'
+    ) THEN 'Carousel'
+    WHEN EXISTS (
+      SELECT 1 FROM content_items c WHERE c.id = content_platform_variants.content_id AND c.format IN ('Reel', 'Video')
+    ) OR EXISTS (
+      SELECT 1 FROM platform_variant_media_assets link JOIN media_assets media ON media.id = link.media_asset_id
+      WHERE link.variant_id = content_platform_variants.id AND media.kind = 'video'
+    ) THEN 'Short video'
+    ELSE 'Single image' END
+    WHERE workspace_id = ?`).bind(actor.workspaceId).run();
+  await db.prepare("UPDATE workspaces SET model_version = 6, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
     .bind(actor.workspaceId).run();
   await activity(db, actor, "workspace_migrated", "workspace", workspace.id, workspace.name,
-    "Milestone 4 publishing queue and log records are ready.", { modelVersion: 5 });
+    "Platform-specific publishing formats and ordered multi-image assets are ready.", { modelVersion: 6 });
 }
 
 async function authenticate(ctx: Context): Promise<Actor> {

@@ -1,6 +1,6 @@
 import {
   assetUsages, canManageContentAssets, canManageLibraryAsset, canManageVariants, canSee, canUploadMedia,
-  statuses, variantPlatforms,
+  platformPublishFormats, publishFormats, statuses, variantPlatforms,
   type Actor, type ContentAsset, type ContentItem, type MediaAsset, type PlatformVariant,
 } from "../lib/hub-types.ts";
 import { HubError } from "./hub-error.ts";
@@ -111,7 +111,7 @@ function validPlannedAt(value: unknown) {
   return result;
 }
 async function contentAssets(ctx: Context, contentId: number): Promise<ContentAsset[]> {
-  const result = await ctx.db.prepare(`SELECT ${mediaCols}, cma.id AS linkId, cma.usage, cma.position
+  const result = await ctx.db.prepare(`SELECT ${mediaCols}, cma.id AS linkId, cma.usage, cma.position, cma.alt_text AS altText
     FROM content_media_assets cma JOIN media_assets m ON m.id = cma.media_asset_id
     LEFT JOIN members u ON u.id = m.uploader_member_id
     WHERE cma.workspace_id = ? AND cma.content_id = ? ORDER BY cma.position, cma.id`)
@@ -119,7 +119,7 @@ async function contentAssets(ctx: Context, contentId: number): Promise<ContentAs
   return result.results;
 }
 async function variantAssets(ctx: Context, variantId: number): Promise<ContentAsset[]> {
-  const result = await ctx.db.prepare(`SELECT ${mediaCols}, pvma.id AS linkId, pvma.usage, pvma.position
+  const result = await ctx.db.prepare(`SELECT ${mediaCols}, pvma.id AS linkId, pvma.usage, pvma.position, pvma.alt_text AS altText
     FROM platform_variant_media_assets pvma JOIN media_assets m ON m.id = pvma.media_asset_id
     LEFT JOIN members u ON u.id = m.uploader_member_id
     WHERE pvma.workspace_id = ? AND pvma.variant_id = ? ORDER BY pvma.position, pvma.id`)
@@ -128,14 +128,14 @@ async function variantAssets(ctx: Context, variantId: number): Promise<ContentAs
 }
 async function variants(ctx: Context, contentId: number) {
   const result = await ctx.db.prepare(`SELECT id, content_id AS contentId, platform, title, caption, description, hashtags, cta, notes,
-    planned_publish_at AS plannedPublishAt, status, version, created_at AS createdAt, updated_at AS updatedAt
+    planned_publish_at AS plannedPublishAt, publish_format AS publishFormat, status, version, created_at AS createdAt, updated_at AS updatedAt
     FROM content_platform_variants WHERE workspace_id = ? AND content_id = ? ORDER BY id`)
     .bind(ctx.actor.workspaceId, contentId).all<PlatformVariant>();
   return Promise.all(result.results.map(async variant => ({ ...variant, assets: await variantAssets(ctx, variant.id) })));
 }
 async function loadVariant(ctx: Context, id: number) {
   const variant = await ctx.db.prepare(`SELECT id, content_id AS contentId, platform, title, caption, description, hashtags, cta, notes,
-    planned_publish_at AS plannedPublishAt, status, version, created_at AS createdAt, updated_at AS updatedAt
+    planned_publish_at AS plannedPublishAt, publish_format AS publishFormat, status, version, created_at AS createdAt, updated_at AS updatedAt
     FROM content_platform_variants WHERE workspace_id = ? AND id = ?`).bind(ctx.actor.workspaceId, id).first<PlatformVariant>();
   if (!variant) throw new HubError("Platform version not found.", 404);
   const item = await loadItem(ctx, variant.contentId);
@@ -152,8 +152,15 @@ function variantInput(payload: Record<string, unknown>, previous?: PlatformVaria
   if (!variantPlatforms.includes(platform)) throw new HubError("Choose a supported platform.");
   const status = required(input.status, "Status", 40) as ContentItem["status"];
   if (!statuses.includes(status)) throw new HubError("Choose a valid workflow status.");
+  const formatValue = Object.prototype.hasOwnProperty.call(payload, "publishFormat")
+    ? payload.publishFormat
+    : previous?.publishFormat ?? platformPublishFormats[platform][0];
+  const publishFormat = required(formatValue, "Publish format", 40) as PlatformVariant["publishFormat"];
+  if (!publishFormats.includes(publishFormat) || !platformPublishFormats[platform].includes(publishFormat)) {
+    throw new HubError(`${publishFormat} is not compatible with ${platform}. Choose a platform-specific format.`);
+  }
   return {
-    platform, status, title: text(input.title, 200), caption: text(input.caption, 15_000),
+    platform, publishFormat, status, title: text(input.title, 200), caption: text(input.caption, 15_000),
     description: text(input.description, 20_000), hashtags: text(input.hashtags, 4_000), cta: text(input.cta, 2_000),
     notes: text(input.notes, 10_000), plannedPublishAt: validPlannedAt(input.plannedPublishAt),
   };
@@ -274,9 +281,9 @@ export async function handleMilestoneTwo(request: Request, path: string[], ctx: 
     const input = variantInput(await jsonBody(request));
     try {
       const result = await ctx.db.prepare(`INSERT INTO content_platform_variants
-        (workspace_id, content_id, platform, title, caption, description, hashtags, cta, notes, planned_publish_at, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(ctx.actor.workspaceId, item.id, input.platform, input.title, input.caption, input.description, input.hashtags, input.cta, input.notes, input.plannedPublishAt, input.status).run();
+        (workspace_id, content_id, platform, title, caption, description, hashtags, cta, notes, planned_publish_at, publish_format, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(ctx.actor.workspaceId, item.id, input.platform, input.title, input.caption, input.description, input.hashtags, input.cta, input.notes, input.plannedPublishAt, input.publishFormat, input.status).run();
       const id = Number(result.meta.last_row_id);
       await activity(ctx, "platform_variant_created", "content", item.id, item.title, `${input.platform} version created.`, { variantId: id, platform: input.platform });
       const created = (await variants(ctx, item.id)).find(x => x.id === id);
@@ -293,11 +300,12 @@ export async function handleMilestoneTwo(request: Request, path: string[], ctx: 
       const input = await jsonBody(request);
       const asset = await loadMedia(ctx, idOf(input.mediaAssetId));
       const purpose = usage(input.usage);
+      const assetAltText = text(input.altText ?? "", 1000);
       try {
         const result = await ctx.db.prepare(`INSERT INTO content_media_assets
-          (workspace_id, content_id, media_asset_id, usage, position)
-          VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM content_media_assets WHERE content_id = ?))`)
-          .bind(ctx.actor.workspaceId, item.id, asset.id, purpose, item.id).run();
+          (workspace_id, content_id, media_asset_id, usage, position, alt_text)
+          VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM content_media_assets WHERE content_id = ?), ?)`)
+          .bind(ctx.actor.workspaceId, item.id, asset.id, purpose, item.id, assetAltText).run();
         await activity(ctx, "asset_attached", "content", item.id, item.title, `${asset.fileName} attached as ${purpose}.`, { assetId: asset.id, linkId: Number(result.meta.last_row_id) });
         return json({ assets: await contentAssets(ctx, item.id) }, 201);
       } catch (error) {
@@ -334,9 +342,9 @@ export async function handleMilestoneTwo(request: Request, path: string[], ctx: 
       if (!Number.isInteger(payload.version) || payload.version !== variant.version) throw new HubError("This platform version changed. Refresh and try again.", 409);
       const input = variantInput(payload, variant);
       const result = await ctx.db.prepare(`UPDATE content_platform_variants SET platform = ?, title = ?, caption = ?, description = ?, hashtags = ?, cta = ?, notes = ?,
-        planned_publish_at = ?, status = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+        planned_publish_at = ?, publish_format = ?, status = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
         WHERE workspace_id = ? AND id = ? AND version = ?`)
-        .bind(input.platform, input.title, input.caption, input.description, input.hashtags, input.cta, input.notes, input.plannedPublishAt, input.status,
+        .bind(input.platform, input.title, input.caption, input.description, input.hashtags, input.cta, input.notes, input.plannedPublishAt, input.publishFormat, input.status,
           ctx.actor.workspaceId, variant.id, variant.version).run();
       if (!result.meta.changes) throw new HubError("This platform version changed. Refresh and try again.", 409);
       await activity(ctx, "platform_variant_edited", "content", item.id, item.title, `${input.platform} version updated.`, { variantId: variant.id, platform: input.platform });
@@ -354,17 +362,37 @@ export async function handleMilestoneTwo(request: Request, path: string[], ctx: 
         const input = await jsonBody(request);
         const asset = await loadMedia(ctx, idOf(input.mediaAssetId));
         const purpose = usage(input.usage);
+        const assetAltText = text(input.altText ?? "", 1000);
         try {
           const result = await ctx.db.prepare(`INSERT INTO platform_variant_media_assets
-            (workspace_id, variant_id, media_asset_id, usage, position)
-            VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM platform_variant_media_assets WHERE variant_id = ?))`)
-            .bind(ctx.actor.workspaceId, variant.id, asset.id, purpose, variant.id).run();
+            (workspace_id, variant_id, media_asset_id, usage, position, alt_text)
+            VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM platform_variant_media_assets WHERE variant_id = ?), ?)`)
+            .bind(ctx.actor.workspaceId, variant.id, asset.id, purpose, variant.id, assetAltText).run();
           await activity(ctx, "asset_attached", "content", item.id, item.title, `${asset.fileName} attached to ${variant.platform} as ${purpose}.`, { assetId: asset.id, variantId: variant.id, linkId: Number(result.meta.last_row_id) });
           return json({ assets: await variantAssets(ctx, variant.id) }, 201);
         } catch (error) {
           if (String(error).includes("UNIQUE")) throw new HubError("This file is already attached to the platform version.", 409);
           throw error;
         }
+      }
+      if (method === "PATCH" && detail === "reorder") {
+        const input = await jsonBody(request);
+        const current = await variantAssets(ctx, variant.id);
+        const ids = input.ids;
+        if (!Array.isArray(ids) || ids.length !== current.length || new Set(ids).size !== ids.length || !ids.every(id => current.some(x => x.linkId === id))) throw new HubError("Refresh the asset list before reordering.", 409);
+        if (ids.length) await ctx.db.batch(ids.map((id, position) => ctx.db.prepare("UPDATE platform_variant_media_assets SET position = ? WHERE workspace_id = ? AND variant_id = ? AND id = ?").bind(position, ctx.actor.workspaceId, variant.id, id)));
+        await activity(ctx, "assets_reordered", "content", item.id, item.title, `${variant.platform} assets reordered.`, { variantId: variant.id });
+        return json({ assets: await variantAssets(ctx, variant.id) });
+      }
+      if (method === "PATCH" && detail && /^\d+$/.test(detail)) {
+        const input = await jsonBody(request);
+        const linkId = idOf(detail);
+        const result = await ctx.db.prepare(`UPDATE platform_variant_media_assets SET usage = ?, alt_text = ?
+          WHERE workspace_id = ? AND variant_id = ? AND id = ?`)
+          .bind(usage(input.usage), text(input.altText ?? "", 1000), ctx.actor.workspaceId, variant.id, linkId).run();
+        if (!result.meta.changes) throw new HubError("Attached asset not found.", 404);
+        await activity(ctx, "asset_details_updated", "content", item.id, item.title, `${variant.platform} asset details updated.`, { variantId: variant.id, linkId });
+        return json({ assets: await variantAssets(ctx, variant.id) });
       }
       if (method === "DELETE" && detail) {
         const linkId = idOf(detail);

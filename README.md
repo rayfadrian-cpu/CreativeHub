@@ -2,7 +2,7 @@
 
 Creative Hub is a private content-management workspace for planning social media content. Milestones 1–5 include login, team roles, Brands, Content Pillars, Campaigns, Content creation, Kanban workflow, Calendar, All Content, a dedicated Content workspace, platform-specific versions, a Media Library, team discussions, approval decisions, Activity History, publishing infrastructure, and the first official Instagram connector.
 
-Milestone 5 can connect one Instagram Business or Creator account and publish approved single-image posts or Reels. Other social platforms and multi-asset carousel publishing remain outside this milestone.
+Milestone 5.1 can connect one Instagram Business or Creator account and publish approved single-image posts, 2–10 image carousels, or short-video Reels. Platform versions now store their own publishing format, ordered media, and image alt text. Other social-platform connectors remain outside this milestone and incompatible jobs are stopped before they enter the queue.
 
 ## What you need
 
@@ -80,6 +80,8 @@ Migration `0006_brave_zaladane.sql` is the additive Milestone 4 migration. It ad
 
 Migration `0007_sudden_tana_nile.sql` is the additive Milestone 5 migration. It adds encrypted social-account records, one-time OAuth state records, and optional account/container references on publishing jobs. See `docs/milestone-5-migration.md` for deployment and recovery details.
 
+Migration `0008_workable_proemial_gods.sql` is the additive Milestone 5.1 migration. It adds platform-specific publishing formats and optional alt text to ordered media links. Existing records are classified safely by the version-6 backfill. See `docs/milestone-5-1-migration.md` for deployment and recovery details.
+
 ## Media Library limits
 
 - Images and documents: up to 25 MB each.
@@ -155,11 +157,11 @@ If a deployment fails after a migration is applied, do not edit or replay the ap
 
 ## Current scope
 
-Milestone 5 ends with one official Instagram connection and publishing proof of concept. The following are intentionally not included yet:
+Milestone 5.1 ends with one official Instagram connection supporting single-image, carousel, and short-video publishing. The following are intentionally not included yet:
 
 - @mentions and notifications
 - TikTok, YouTube, LinkedIn, Facebook, and X connections
-- Instagram carousel and Story publishing
+- Instagram Story publishing and mixed image/video carousels
 - A provider-backed recurring worker trigger (the due-job processor is currently started from the Publishing screen)
 - Analytics
 - AI Studio

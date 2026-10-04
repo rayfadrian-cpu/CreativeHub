@@ -57,6 +57,13 @@
       "when": 1790699545910,
       "tag": "0007_sudden_tana_nile",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1791119600170,
+      "tag": "0008_workable_proemial_gods",
+      "breakpoints": true
     }
   ]
 }

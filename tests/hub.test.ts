@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { readFileSync, readdirSync } from "node:fs";
 import { handleHub } from "../db/hub-service.ts";
 import { processDuePublishJobs } from "../db/milestone-four.ts";
-import { decryptSocialToken, encryptSocialToken, signPublishingMedia, verifyPublishingMediaSignature, type InstagramConfig } from "../db/milestone-five.ts";
+import { createPublishingConnectors, decryptSocialToken, encryptSocialToken, signPublishingMedia, verifyPublishingMediaSignature, type InstagramConfig } from "../db/milestone-five.ts";
 import { roles, statuses, type Role } from "../lib/hub-types.ts";
 
 let fixtureSequence = 0;
@@ -149,9 +149,9 @@ test("safe migration preserves every legacy content value and links stable IDs",
   assert.ok(data.items[0].brandId);
   assert.ok(data.items[0].pillarId);
   assert.ok(data.items[0].campaignId);
-  assert.equal((f.sqlite.prepare("SELECT model_version FROM workspaces WHERE id = 'main'").get() as any).model_version, 5);
-  const variant = f.sqlite.prepare("SELECT platform, title, caption, notes FROM content_platform_variants WHERE content_id = 42").get() as any;
-  assert.deepEqual([variant.platform, variant.title, variant.caption, variant.notes], ["Instagram", "Preserve me", "Original caption", ""]);
+  assert.equal((f.sqlite.prepare("SELECT model_version FROM workspaces WHERE id = 'main'").get() as any).model_version, 6);
+  const variant = f.sqlite.prepare("SELECT platform, title, caption, notes, publish_format FROM content_platform_variants WHERE content_id = 42").get() as any;
+  assert.deepEqual([variant.platform, variant.title, variant.caption, variant.notes, variant.publish_format], ["Instagram", "Preserve me", "Original caption", "", "Single image"]);
   assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM collections").get() as any).n, 0);
   assert.equal((await f.call("Owner", "PUT", "content/42", { version: 1, title: "Bad origin" }, { origin: "https://evil.test" })).status, 403);
   assert.equal((await f.call("Viewer", "GET", "workspace")).data.members[0].email, "");
@@ -349,6 +349,7 @@ test("platform versions can be created and edited with concurrency, permissions,
   const created = await f.call("Social Media", "POST", `content/${id}/variants`, payload);
   assert.equal(created.status, 201);
   assert.equal(created.data.variant.platform, "TikTok");
+  assert.equal(created.data.variant.publishFormat, "Short video");
   assert.equal(created.data.variant.caption, "Opening caption");
   const variantId = created.data.variant.id;
   assert.equal((await f.call("Owner", "PUT", `variants/${variantId}`, { ...payload, version: 99, caption: "Stale" })).status, 409);
@@ -543,14 +544,20 @@ test("Milestone 4 schedules only approved platform versions and keeps one active
   f.sqlite.close();
 });
 
-test("Milestone 4 safely blocks jobs without connectors, records logs, and supports retry and cancellation", async () => {
+test("Milestone 5.1 rejects unconnected platforms before queueing and still blocks legacy jobs safely", async () => {
   const f = fixture(); await f.start();
   const contentId = f.item("Approved", "Creative");
   const variantId = Number(f.sqlite.prepare(`INSERT INTO content_platform_variants
     (workspace_id, content_id, platform, title, caption, status)
     VALUES ('main', ?, 'LinkedIn', 'Queue test', 'Ready', 'Approved')`).run(contentId).lastInsertRowid);
-  const scheduled = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-09-01T02:00:00.000Z" });
-  const jobId = scheduled.data.job.id;
+  const rejected = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-09-01T02:00:00.000Z" });
+  assert.equal(rejected.status, 409);
+  assert.match(rejected.data.error, /LinkedIn publishing is not connected yet/);
+  assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM publish_jobs").get() as any).n, 0);
+  const jobId = Number(f.sqlite.prepare(`INSERT INTO publish_jobs
+    (workspace_id, content_id, variant_id, platform, account_label, scheduled_at, status, next_attempt_at, created_by_member_id)
+    VALUES ('main', ?, ?, 'LinkedIn', 'Legacy job', '2026-09-01T02:00:00.000Z', 'scheduled', '2026-09-01T02:00:00.000Z', ?)`)
+    .run(contentId, variantId, f.memberId("Owner")).lastInsertRowid);
   const run = await f.call("Social Media", "POST", "publishing/run", {});
   assert.equal(run.status, 200);
   assert.equal(run.data.processed, 1);
@@ -561,7 +568,86 @@ test("Milestone 4 safely blocks jobs without connectors, records logs, and suppo
   assert.deepEqual([logs.data.logs[0].platform, logs.data.logs[0].attemptNumber, logs.data.logs[0].status], ["LinkedIn", 1, "blocked"]);
   assert.equal((await f.call("Social Media", "POST", `publishing/jobs/${jobId}/retry`, {})).data.job.status, "queued");
   assert.equal((await f.call("Owner", "POST", `publishing/jobs/${jobId}/cancel`, {})).data.job.status, "cancelled");
-  assert.ok((f.sqlite.prepare("SELECT COUNT(*) n FROM activity_history WHERE action IN ('publish_scheduled','publish_blocked','publish_retried','publish_cancelled')").get() as any).n >= 4);
+  assert.ok((f.sqlite.prepare("SELECT COUNT(*) n FROM activity_history WHERE action IN ('publish_blocked','publish_retried','publish_cancelled')").get() as any).n >= 3);
+  f.sqlite.close();
+});
+
+test("Instagram Carousel requires 2–10 ordered JPEG images before scheduling", async () => {
+  const f = fixture(); await f.start();
+  const contentId = f.item("Approved", "Creative");
+  const variantId = Number(f.sqlite.prepare(`INSERT INTO content_platform_variants
+    (workspace_id, content_id, platform, publish_format, title, caption, status)
+    VALUES ('main', ?, 'Instagram', 'Carousel', 'Carousel test', 'Ready caption', 'Approved')`).run(contentId).lastInsertRowid);
+  f.prepareInstagramPost(contentId, variantId);
+  const incomplete = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
+  assert.equal(incomplete.status, 409);
+  assert.match(incomplete.data.error, /2 to 10 images/);
+  const secondId = Number(f.sqlite.prepare(`INSERT INTO media_assets
+    (workspace_id, file_name, original_name, kind, mime_type, file_size, storage_key, uploader_member_id)
+    VALUES ('main', 'second.jpg', 'second.jpg', 'image', 'image/jpeg', 4, 'main/tests/second.jpg', ?)`)
+    .run(f.memberId("Owner")).lastInsertRowid);
+  f.sqlite.prepare(`INSERT INTO platform_variant_media_assets
+    (workspace_id, variant_id, media_asset_id, usage, position, alt_text)
+    VALUES ('main', ?, ?, 'Supporting Asset', 1, 'Second carousel card')`).run(variantId, secondId);
+  const scheduled = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-10-01T02:00:00.000Z" });
+  assert.equal(scheduled.status, 201);
+  assert.equal(scheduled.data.job.platform, "Instagram");
+  f.sqlite.close();
+});
+
+test("Instagram connector creates ordered carousel children, parent container, and published post", async () => {
+  const f = fixture(); await f.start();
+  const encryptionKey = Buffer.alloc(32, 9).toString("base64");
+  const config = { appId: "meta-app", appSecret: "meta-secret", encryptionKey, apiVersion: "v25.0" };
+  f.setInstagram(config);
+  const contentId = f.item("Approved", "Creative");
+  const variantId = Number(f.sqlite.prepare(`INSERT INTO content_platform_variants
+    (workspace_id, content_id, platform, publish_format, title, caption, status)
+    VALUES ('main', ?, 'Instagram', 'Carousel', 'Publish carousel', 'Carousel caption', 'Approved')`).run(contentId).lastInsertRowid);
+  const encrypted = await encryptSocialToken("instagram-test-token", encryptionKey);
+  f.sqlite.prepare(`INSERT INTO social_accounts
+    (workspace_id, platform, provider_account_id, username, token_ciphertext, token_iv, token_expires_at, scopes, status)
+    VALUES ('main', 'Instagram', 'ig-account', 'creativehubtest', ?, ?, '2027-12-01T00:00:00.000Z', 'instagram_business_content_publish', 'connected')`)
+    .run(encrypted.ciphertext, encrypted.iv);
+  for (const [position, name] of ["first.jpg", "second.jpg"].entries()) {
+    const mediaId = Number(f.sqlite.prepare(`INSERT INTO media_assets
+      (workspace_id, file_name, original_name, kind, mime_type, file_size, storage_key, uploader_member_id)
+      VALUES ('main', ?, ?, 'image', 'image/jpeg', 4, ?, ?)`)
+      .run(name, name, `main/tests/${name}`, f.memberId("Owner")).lastInsertRowid);
+    f.sqlite.prepare(`INSERT INTO platform_variant_media_assets
+      (workspace_id, variant_id, media_asset_id, usage, position, alt_text)
+      VALUES ('main', ?, ?, ?, ?, ?)`)
+      .run(variantId, mediaId, position ? "Supporting Asset" : "Main Asset", position, `${position + 1}`);
+  }
+  const scheduled = await f.call("Owner", "POST", "publishing/jobs", { variantId, scheduledAt: "2026-09-01T02:00:00.000Z" });
+  assert.equal(scheduled.status, 201);
+  const actor = (await f.call("Owner", "GET", "workspace")).data.actor;
+  const originalFetch = globalThis.fetch;
+  const mediaBodies: URLSearchParams[] = [];
+  let child = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/media")) {
+      const body = init?.body as URLSearchParams;
+      mediaBodies.push(body);
+      if (body.get("is_carousel_item") === "true") return Response.json({ id: `child-${++child}` });
+      return Response.json({ id: "carousel-parent" });
+    }
+    if (url.pathname.endsWith("/media_publish")) return Response.json({ id: "instagram-post" });
+    if (url.pathname.endsWith("/instagram-post")) return Response.json({ id: "instagram-post", permalink: "https://instagram.test/p/carousel" });
+    return Response.json({ error: { code: 404, message: "Unexpected test request" } }, { status: 404 });
+  };
+  try {
+    const connectors = await createPublishingConnectors({ db: f.db, bucket: {} as R2Bucket, actor, origin: "https://creative.test", config });
+    const result = await processDuePublishJobs(f.db, actor, connectors, new Date("2026-09-27T00:00:00.000Z"));
+    assert.equal(result[0].status, "published");
+  } finally { globalThis.fetch = originalFetch; }
+  assert.equal(mediaBodies.length, 3);
+  assert.deepEqual(mediaBodies.slice(0, 2).map(body => body.get("is_carousel_item")), ["true", "true"]);
+  assert.equal(mediaBodies[2].get("media_type"), "CAROUSEL");
+  assert.equal(mediaBodies[2].get("children"), "child-1,child-2");
+  const published = f.sqlite.prepare("SELECT status, provider_container_id, external_post_id FROM publish_jobs WHERE id = ?").get(scheduled.data.job.id) as any;
+  assert.deepEqual([published.status, published.provider_container_id, published.external_post_id], ["published", "carousel-parent", "instagram-post"]);
   f.sqlite.close();
 });
 

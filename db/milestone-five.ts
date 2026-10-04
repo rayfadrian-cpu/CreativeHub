@@ -1,4 +1,4 @@
-import { managers, type Actor } from "../lib/hub-types.ts";
+import { managers, type Actor, type PublishFormat } from "../lib/hub-types.ts";
 import { HubError } from "./hub-error.ts";
 import type { PublishingConnector, PublishingConnectors } from "./milestone-four.ts";
 
@@ -275,7 +275,7 @@ export async function handleMilestoneFive(request: Request, path: string[], ctx:
       account: publicAccount(account),
       permissions: { manage: managers(ctx.actor.role) },
       redirectUri: `${ctx.origin}/api/hub/integrations/instagram/callback`,
-      capabilities: ["Single image", "Reel / video"],
+      capabilities: ["Single image", "Carousel (2–10 JPEG images)", "Short video / Reel"],
     }, { headers: noStoreHeaders });
   }
   if (action === "connect" && request.method === "GET") return beginConnection(ctx, true);
@@ -304,17 +304,32 @@ async function refreshTokenIfNeeded(ctx: Context, account: SocialAccountRow) {
 }
 
 async function mediaForJob(ctx: Context, variantId: number, contentId: number) {
-  const variantAsset = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
+  const variantAssets = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
     FROM platform_variant_media_assets link JOIN media_assets m ON m.id = link.media_asset_id
-    WHERE link.workspace_id = ? AND link.variant_id = ? AND m.kind IN ('image', 'video')
-    ORDER BY CASE link.usage WHEN 'Main Asset' THEN 0 WHEN 'Cover' THEN 1 ELSE 2 END, link.position, link.id LIMIT 1`)
-    .bind(ctx.actor.workspaceId, variantId).first<{ id: number; kind: string; mimeType: string }>();
-  if (variantAsset) return variantAsset;
-  return ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
+    WHERE link.workspace_id = ? AND link.variant_id = ? AND link.usage IN ('Main Asset', 'Supporting Asset') AND m.kind IN ('image', 'video')
+    ORDER BY link.position, link.id`)
+    .bind(ctx.actor.workspaceId, variantId).all<{ id: number; kind: string; mimeType: string }>();
+  if (variantAssets.results.length) return variantAssets.results;
+  const contentAssets = await ctx.db.prepare(`SELECT m.id, m.kind, m.mime_type AS mimeType
     FROM content_media_assets link JOIN media_assets m ON m.id = link.media_asset_id
-    WHERE link.workspace_id = ? AND link.content_id = ? AND m.kind IN ('image', 'video')
-    ORDER BY CASE link.usage WHEN 'Main Asset' THEN 0 WHEN 'Cover' THEN 1 ELSE 2 END, link.position, link.id LIMIT 1`)
-    .bind(ctx.actor.workspaceId, contentId).first<{ id: number; kind: string; mimeType: string }>();
+    WHERE link.workspace_id = ? AND link.content_id = ? AND link.usage IN ('Main Asset', 'Supporting Asset') AND m.kind IN ('image', 'video')
+    ORDER BY link.position, link.id`)
+    .bind(ctx.actor.workspaceId, contentId).all<{ id: number; kind: string; mimeType: string }>();
+  return contentAssets.results;
+}
+
+type PublishingAsset = { id: number; kind: string; mimeType: string };
+
+function instagramMediaProblem(publishFormat: PublishFormat, assets: PublishingAsset[]) {
+  if (publishFormat === "Single image") return assets.length === 1 && assets[0].kind === "image" && assets[0].mimeType === "image/jpeg"
+    ? "" : "Single image publishing requires exactly one JPEG image.";
+  if (publishFormat === "Carousel") {
+    if (assets.length < 2 || assets.length > 10) return "Instagram Carousel requires 2 to 10 images.";
+    return assets.every(asset => asset.kind === "image" && asset.mimeType === "image/jpeg") ? "" : "Instagram Carousel currently supports JPEG images only.";
+  }
+  if (publishFormat === "Short video") return assets.length === 1 && assets[0].kind === "video" && ["video/mp4", "video/quicktime"].includes(assets[0].mimeType)
+    ? "" : "Instagram Reel publishing requires exactly one MP4 or MOV video.";
+  return `${publishFormat} is not available for Instagram publishing.`;
 }
 
 function instagramCaption(payload: { caption: string; description: string; hashtags: string; cta: string }) {
@@ -336,25 +351,43 @@ function connector(ctx: Context): PublishingConnector {
     if (!account || account.status !== "connected" || !account.tokenCiphertext || !account.tokenIv) {
       return { ok: false, retryable: false, errorCode: "ACCOUNT_NOT_CONNECTED", errorMessage: "Connect an Instagram professional account before publishing." };
     }
-    const asset = await mediaForJob(ctx, payload.variantId, payload.contentId);
-    if (!asset) return { ok: false, retryable: false, errorCode: "MEDIA_REQUIRED", errorMessage: "Attach one image or video to the Instagram platform version before publishing." };
+    const assets = await mediaForJob(ctx, payload.variantId, payload.contentId);
+    const mediaProblem = instagramMediaProblem(payload.publishFormat, assets);
+    if (mediaProblem) return { ok: false, retryable: false, errorCode: "MEDIA_INCOMPATIBLE", errorMessage: mediaProblem };
     try {
       const token = await refreshTokenIfNeeded(ctx, account);
       const expires = Math.floor(Date.now() / 1000) + 15 * 60;
-      const signature = await signPublishingMedia(ctx.actor.workspaceId, asset.id, expires, ctx.config.encryptionKey);
-      const mediaUrl = `${ctx.origin}/api/publishing-media/${asset.id}?workspace=${encodeURIComponent(ctx.actor.workspaceId)}&expires=${expires}&signature=${encodeURIComponent(signature)}`;
+      const mediaUrl = async (asset: PublishingAsset) => {
+        const signature = await signPublishingMedia(ctx.actor.workspaceId, asset.id, expires, ctx.config.encryptionKey);
+        return `${ctx.origin}/api/publishing-media/${asset.id}?workspace=${encodeURIComponent(ctx.actor.workspaceId)}&expires=${expires}&signature=${encodeURIComponent(signature)}`;
+      };
       let containerId = row && row.id === account.id ? row.providerContainerId : "";
       if (!containerId) {
         const createUrl = new URL(`https://graph.instagram.com/${ctx.config.apiVersion}/${account.providerAccountId}/media`);
-        const params = new URLSearchParams({ access_token: token, caption: instagramCaption(payload) });
-        if (asset.kind === "video") { params.set("media_type", "REELS"); params.set("video_url", mediaUrl); }
-        else params.set("image_url", mediaUrl);
-        const created = await graphJson<{ id: string }>(createUrl.toString(), { method: "POST", body: params });
-        containerId = created.id;
+        if (payload.publishFormat === "Carousel") {
+          const childIds: string[] = [];
+          for (const asset of assets) {
+            const child = await graphJson<{ id: string }>(createUrl.toString(), { method: "POST", body: new URLSearchParams({
+              access_token: token, image_url: await mediaUrl(asset), is_carousel_item: "true",
+            }) });
+            childIds.push(child.id);
+          }
+          const parent = await graphJson<{ id: string }>(createUrl.toString(), { method: "POST", body: new URLSearchParams({
+            access_token: token, caption: instagramCaption(payload), media_type: "CAROUSEL", children: childIds.join(","),
+          }) });
+          containerId = parent.id;
+        } else {
+          const asset = assets[0];
+          const params = new URLSearchParams({ access_token: token, caption: instagramCaption(payload) });
+          if (payload.publishFormat === "Short video") { params.set("media_type", "REELS"); params.set("video_url", await mediaUrl(asset)); }
+          else params.set("image_url", await mediaUrl(asset));
+          const created = await graphJson<{ id: string }>(createUrl.toString(), { method: "POST", body: params });
+          containerId = created.id;
+        }
         await ctx.db.prepare("UPDATE publish_jobs SET provider_container_id = ?, social_account_id = ?, account_label = ?, updated_at = CURRENT_TIMESTAMP WHERE workspace_id = ? AND id = ?")
           .bind(containerId, account.id, instagramLabel(account), ctx.actor.workspaceId, payload.jobId).run();
       }
-      if (asset.kind === "video") {
+      if (payload.publishFormat === "Short video") {
         const statusUrl = new URL(`https://graph.instagram.com/${ctx.config.apiVersion}/${containerId}`);
         statusUrl.searchParams.set("fields", "status_code,status");
         statusUrl.searchParams.set("access_token", token);
